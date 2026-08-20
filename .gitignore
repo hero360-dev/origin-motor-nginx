@@ -1,0 +1,23 @@
+# Credenciales y secrets
+*.env
+*secrets*
+*.key
+*.pem
+id_*
+!id_*.example
+
+# Archivos de log
+*.log
+
+# Backups
+*.bak
+*.backup
+
+# Supervisor confs con datos reales de canales (demasiados archivos)
+# Solo mantener templates
+origin/supervisor/conf.d/
+
+# OS
+.DS_Store
+Thumbs.db
+origin/supervisor/library/

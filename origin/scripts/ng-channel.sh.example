@@ -1,0 +1,8 @@
+#!/bin/bash
+exec /usr/bin/ffmpeg \
+  -user_agent "Mozilla/5.0" \
+  -reconnect 1 -reconnect_at_eof 1 -reconnect_streamed 1 -reconnect_delay_max 2 \
+  -i https://FUENTE_PROVEEDOR/live/USUARIO/TOKEN/CANAL.ts \
+  -c:v copy \
+  -c:a aac -b:a 128k -ar 48000 -ac 2 \
+  -f flv rtmp://127.0.0.1:1936/live/fx0093

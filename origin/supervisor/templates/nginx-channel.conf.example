@@ -1,0 +1,26 @@
+# Template supervisord para canal en modo nginx-rtmp
+# Copiar a /etc/supervisor/library/nginx/fxNNNN.conf
+# y reemplazar fxNNNN y SOURCE_URL
+
+[program:fxNNNN]
+command=/usr/bin/ffmpeg \
+  -user_agent "Mozilla/5.0" \
+  -reconnect 1 -reconnect_at_eof 1 -reconnect_streamed 1 -reconnect_delay_max 2 \
+  -i https://SOURCE_PROVIDER/live/USER/TOKEN/CANAL_ID.ts \
+  -c:v copy \
+  -c:a aac -b:a 128k -ar 48000 -ac 2 \
+  -f flv rtmp://127.0.0.1:1936/live/fxNNNN
+autostart=true
+autorestart=true
+startsecs=20
+startretries=999
+exitcodes=0
+stopsignal=INT
+user=root
+stdout_logfile=/var/log/supervisor/fxNNNN.out.log
+stderr_logfile=/var/log/supervisor/fxNNNN.err.log
+stdout_logfile_maxbytes=5MB
+stderr_logfile_maxbytes=5MB
+stdout_logfile_backups=3
+stderr_logfile_backups=3
+environment=HOME="/root"
