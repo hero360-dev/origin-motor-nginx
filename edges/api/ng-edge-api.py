@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Edge mini-API: exposes streaming metrics as JSON on port 8091"""
-import json, re, time, subprocess, sys, os
+import json, re, time, sys, os
 from datetime import datetime
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
@@ -9,36 +9,31 @@ CACHE_DIR = "/var/cache/nginx/hls"
 PORT      = 8091
 HOSTNAME  = sys.argv[1] if len(sys.argv) > 1 else "edge"
 
-# Force a sane PATH for subprocess calls
 os.environ['PATH'] = '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'
 
 LOG_RE = re.compile(
     r'(\S+) - \S+ \[(\d+/\w+/\d+:\d+:\d+:\d+ [+-]\d{4})\] '
     r'"(?:GET|POST|HEAD) (\S+) \S+" (\d+) (\d+)'
 )
-
-def run(cmd, timeout=5):
-    try:
-        r = subprocess.run(cmd, capture_output=True, text=True,
-                           timeout=timeout, env=os.environ)
-        return r.stdout.strip()
-    except Exception:
-        return ""
+# Extrae el número de canal de la URL: /01hbx0093c6WI3k/...
+CH_RE = re.compile(r'/01hbx(\d+)c6WI3k/')
 
 def parse_log():
     now = time.time()
     viewers = set()
     bytes_out = 0
     total = 0
+    channels = {}   # { "0093": {viewers: set, bytes: int, req: int} }
+
     try:
         with open(LOG_FILE, 'rb') as f:
-            # Efficient tail: read last 512KB
             f.seek(0, 2)
             size = f.tell()
             f.seek(max(0, size - 512 * 1024))
             content = f.read().decode('utf-8', errors='replace')
     except Exception:
         content = ""
+
     for line in content.splitlines():
         m = LOG_RE.match(line)
         if not m:
@@ -51,53 +46,72 @@ def parse_log():
             continue
         if age > 30:
             continue
-        bytes_out += int(bytes_sent)
+        b = int(bytes_sent)
+        bytes_out += b
         total += 1
-        if age <= 12 and ('.m3u8' in uri or 'playlist' in uri):
+        is_m3u8 = age <= 12 and ('.m3u8' in uri or 'playlist' in uri)
+        if is_m3u8:
             viewers.add(ip)
+
+        # Per-channel
+        cm = CH_RE.search(uri)
+        if cm:
+            ch = cm.group(1)
+            if ch not in channels:
+                channels[ch] = {'viewers': set(), 'bytes': 0, 'req': 0}
+            channels[ch]['bytes'] += b
+            channels[ch]['req'] += 1
+            if is_m3u8:
+                channels[ch]['viewers'].add(ip)
+
     bw_mbps = round((bytes_out * 8) / (30 * 1_000_000), 3)
-    return {"viewers": len(viewers), "bw_out_mbps": bw_mbps,
-            "bytes_out_30s": bytes_out, "requests_30s": total}
+    ch_stats = {
+        ch: {
+            'viewers':  len(d['viewers']),
+            'bw_mbps':  round((d['bytes'] * 8) / (30 * 1_000_000), 3),
+            'requests': d['req']
+        }
+        for ch, d in channels.items()
+    }
+    return {
+        "viewers":       len(viewers),
+        "bw_out_mbps":   bw_mbps,
+        "bytes_out_30s": bytes_out,
+        "requests_30s":  total,
+        "channels":      ch_stats
+    }
 
 def cache_info():
-    # Read cache size from /proc (no subprocess)
-    size = "N/A"
-    files = 0
+    size, files = "0B", 0
     try:
         total = 0
-        for dirpath, dirnames, filenames in os.walk(CACHE_DIR):
+        for dirpath, _, filenames in os.walk(CACHE_DIR):
             for fname in filenames:
                 try:
                     total += os.path.getsize(os.path.join(dirpath, fname))
                     files += 1
-                except:
+                except Exception:
                     pass
-        # Format size
-        if total < 1024:
-            size = f"{total}B"
-        elif total < 1024**2:
-            size = f"{total//1024}K"
-        elif total < 1024**3:
-            size = f"{total//1024//1024}M"
-        else:
-            size = f"{total//1024//1024//1024}G"
+        if   total < 1024:      size = f"{total}B"
+        elif total < 1024**2:   size = f"{total//1024}K"
+        elif total < 1024**3:   size = f"{total//1024//1024}M"
+        else:                   size = f"{total//1024//1024//1024}G"
     except Exception:
         pass
     return {"cache_size": size, "cache_files": files}
 
 def nginx_status():
-    # Check via /proc instead of pgrep
     try:
         for pid in os.listdir('/proc'):
             if not pid.isdigit():
                 continue
             try:
-                with open(f'/proc/{pid}/comm', 'r') as f:
+                with open(f'/proc/{pid}/comm') as f:
                     if f.read().strip() == 'nginx':
                         return "active"
-            except:
+            except Exception:
                 pass
-    except:
+    except Exception:
         pass
     return "inactive"
 

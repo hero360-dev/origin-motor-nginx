@@ -418,6 +418,31 @@ tr:hover td{background:#1a2540}
 .url-icon-btn.play-src:hover{background:#78350f33}
 /* Actions */
 .act-btns{display:flex;gap:5px;flex-wrap:nowrap;align-items:center}
+/* Edge sub-row */
+.edge-sub-row td{padding:0}
+.edge-sub-td{padding:0!important;border-top:none!important}
+.edge-dist-grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:0;background:#060d18;border-bottom:1px solid #1e293b}
+.edc{padding:14px 18px;border-right:1px solid #1e293b}
+.edc:last-child{border-right:none}
+.edc-header{display:flex;align-items:center;gap:8px;margin-bottom:10px}
+.edc-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0}
+.edc-dot.active{background:#22c55e;box-shadow:0 0 5px #22c55e88;animation:pulse 2s infinite}
+.edc-dot.inactive{background:#ef4444}
+.edc-dot.unknown{background:#475569}
+.edc-name{font-size:.82rem;font-weight:700;color:#e2e8f0}
+.edc-ip{font-size:.68rem;color:#334155;margin-left:auto}
+.edc-stats-row{display:flex;gap:18px;margin-bottom:8px}
+.edc-stat{display:flex;flex-direction:column;gap:2px}
+.edc-stat-label{font-size:.63rem;color:#475569;text-transform:uppercase;letter-spacing:.04em}
+.edc-stat-value{font-size:.98rem;font-weight:700;color:#38bdf8}
+.edc-stat-value.vw-val{color:#22c55e}
+.edc-bw-bg{height:4px;background:#1e293b;border-radius:2px;margin-bottom:10px;overflow:hidden}
+.edc-bw-fill{height:100%;background:#38bdf8;border-radius:2px;transition:width .5s}
+.edc-play-btn{background:#0ea5e9;color:#fff;border:none;border-radius:6px;padding:6px 14px;font-size:.78rem;font-weight:600;cursor:pointer;width:100%;transition:background .2s}
+.edc-play-btn:hover{background:#0284c7}
+.abtn.a-edges{background:#0ea5e920;color:#38bdf8;border:1px solid #38bdf840;font-size:.75rem}
+.abtn.a-edges:hover{background:#0ea5e940}
+.abtn.a-edges.open{background:#38bdf820;border-color:#38bdf8;color:#7dd3fc}
 .abtn{padding:5px 10px;border:none;border-radius:6px;cursor:pointer;font-size:.75rem;font-weight:600;white-space:nowrap;transition:all .2s}
 .abtn:hover{opacity:.8;transform:translateY(-1px)}
 .a-stop{background:#7f1d1d33;color:#f87171;border:1px solid #7f1d1d66}
@@ -731,9 +756,53 @@ foreach($channels as $ch):
             <button class="abtn a-start" onclick="chanAction('start','<?= $ch ?>')">▶ Start</button>
           <?php endif ?>
           <button class="abtn a-del" onclick="confirmDelete('<?= $ch ?>')" title="Eliminar canal">🗑</button>
+          <button class="abtn a-edges" id="ebtn-<?= $ch ?>" onclick="toggleEdges('<?= $ch ?>')" title="Ver distribución por edge">🌐</button>
         </div>
       </td>
     </tr>
+<tr id="edgerow-<?= $ch ?>" class="edge-sub-row" style="display:none">
+  <td colspan="9" class="edge-sub-td">
+    <div class="edge-dist-grid" id="edgegrid-<?= $ch ?>">
+      <?php
+      $ei_list=[
+        ['id'=>'edge1','label'=>'Edge 1','ip'=>'186.233.186.55'],
+        ['id'=>'edge2','label'=>'Edge 2','ip'=>'186.233.186.58'],
+        ['id'=>'edge3','label'=>'Edge 3','ip'=>'198.147.24.146'],
+      ];
+      $ch_num=str_replace('fx','',$ch);
+      foreach($ei_list as $ei): ?>
+      <div class="edc" id="edc-<?= $ch ?>-<?= $ei['id'] ?>">
+        <div class="edc-header">
+          <span class="edc-dot unknown" id="edcdot-<?= $ch ?>-<?= $ei['id'] ?>"></span>
+          <span class="edc-name"><?= $ei['label'] ?></span>
+          <span class="edc-ip"><?= $ei['ip'] ?></span>
+        </div>
+        <div class="edc-stats-row">
+          <div class="edc-stat">
+            <span class="edc-stat-label">👁 Viewers</span>
+            <span class="edc-stat-value vw-val" id="edcvw-<?= $ch ?>-<?= $ei['id'] ?>">—</span>
+          </div>
+          <div class="edc-stat">
+            <span class="edc-stat-label">📤 BW Salida</span>
+            <span class="edc-stat-value" id="edcbw-<?= $ch ?>-<?= $ei['id'] ?>">—</span>
+          </div>
+          <div class="edc-stat">
+            <span class="edc-stat-label">📶 Req/30s</span>
+            <span class="edc-stat-value" id="edcreq-<?= $ch ?>-<?= $ei['id'] ?>">—</span>
+          </div>
+        </div>
+        <div class="edc-bw-bg">
+          <div class="edc-bw-fill" id="edcbar-<?= $ch ?>-<?= $ei['id'] ?>" style="width:0%"></div>
+        </div>
+        <button class="edc-play-btn"
+          onclick="playFromEdge('<?= $ch_num ?>','<?= $ei['ip'] ?>','<?= $ei['label'] ?>')">
+          ▶ Play desde <?= $ei['label'] ?>
+        </button>
+      </div>
+      <?php endforeach ?>
+    </div>
+  </td>
+</tr>
 <?php endforeach ?>
     </tbody>
   </table>
@@ -793,6 +862,70 @@ foreach($channels as $ch):
 <div id="toast"></div>
 
 <script src="https://cdn.jsdelivr.net/npm/hls.js@latest/dist/hls.min.js"></script>
+<script>
+// ── Edge distribution ───────────────────────────────────────────
+let edgeData = {};
+
+function toggleEdges(ch) {
+  const row = document.getElementById('edgerow-' + ch);
+  const btn = document.getElementById('ebtn-' + ch);
+  const open = row.style.display !== 'none';
+  row.style.display = open ? 'none' : 'table-row';
+  btn.classList.toggle('open', !open);
+  if (!open) fetchEdgeData();
+}
+
+function fetchEdgeData() {
+  fetch('ng_channel_edges.php')
+    .then(r => r.json())
+    .then(data => { edgeData = data; updateEdgeRows(); })
+    .catch(() => {});
+}
+
+function updateEdgeRows() {
+  const EDGES = ['edge1','edge2','edge3'];
+  document.querySelectorAll('.edge-sub-row').forEach(row => {
+    if (row.style.display === 'none') return;
+    const ch = row.id.replace('edgerow-','');
+    const chNum = ch.replace('fx','');
+    EDGES.forEach(eid => {
+      const edata  = edgeData[eid];
+      if (!edata) return;
+      const chData = (edata.channels||{})[chNum] || null;
+      const dot  = document.getElementById('edcdot-' + ch + '-' + eid);
+      const vw   = document.getElementById('edcvw-'  + ch + '-' + eid);
+      const bw   = document.getElementById('edcbw-'  + ch + '-' + eid);
+      const req  = document.getElementById('edcreq-' + ch + '-' + eid);
+      const bar  = document.getElementById('edcbar-' + ch + '-' + eid);
+      if (!dot) return;
+      dot.className = 'edc-dot ' + (edata.nginx_status === 'active' ? 'active' : (edata.nginx_status === 'inactive' ? 'inactive' : 'unknown'));
+      if (chData) {
+        vw.textContent  = chData.viewers;
+        bw.textContent  = chData.bw_mbps.toFixed(2) + ' Mbps';
+        req.textContent = chData.requests;
+        const pct = Math.min(100, (chData.bw_mbps / 20) * 100);
+        bar.style.width      = pct + '%';
+        bar.style.background = chData.bw_mbps > 10 ? '#f59e0b' : '#38bdf8';
+      } else {
+        vw.textContent  = '0';
+        bw.textContent  = '0 Mbps';
+        req.textContent = '0';
+        bar.style.width = '0%';
+      }
+    });
+  });
+}
+
+function playFromEdge(chNum, edgeIp, edgeLabel) {
+  const url = 'http://' + edgeIp + '/01hbx' + chNum + 'c6WI3k/myStream/playlist.m3u8';
+  openPlayer(url, 'fx' + chNum + ' — ' + edgeLabel);
+}
+
+// Auto-refresh edge data every 10s if any row is open
+setInterval(() => {
+  if (document.querySelector('.edge-sub-row[style*="table-row"]')) fetchEdgeData();
+}, 10000);
+</script>
 <script>
 // ─── CONFIG ───────────────────────────────────────────────────────────────
 const REFRESH_MS   = 5000;
