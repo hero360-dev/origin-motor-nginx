@@ -794,10 +794,15 @@ foreach($channels as $ch):
         <div class="edc-bw-bg">
           <div class="edc-bw-fill" id="edcbar-<?= $ch ?>-<?= $ei['id'] ?>" style="width:0%"></div>
         </div>
-        <button class="edc-play-btn"
-          onclick="playFromEdge('<?= $ch_num ?>','<?= $ei['ip'] ?>','<?= $ei['label'] ?>')">
-          ▶ Play desde <?= $ei['label'] ?>
-        </button>
+        <div style="display:flex;gap:6px;margin-top:2px">
+          <button class="edc-play-btn" style="flex:2"
+            onclick="playFromEdge('<?= $ch_num ?>','<?= $ei['ip'] ?>','<?= $ei['label'] ?>')">
+            ▶ Play
+          </button>
+          <a class="edc-play-btn" style="flex:1;text-align:center;text-decoration:none;background:#0f172a;border:1px solid #334155;color:#64748b"
+            href="http://<?= $ei['ip'] ?>/01hbx<?= $ch_num ?>c6WI3k/myStream/playlist.m3u8"
+            target="_blank" title="Abrir URL en nueva pestaña">🔗</a>
+        </div>
       </div>
       <?php endforeach ?>
     </div>
@@ -832,6 +837,7 @@ foreach($channels as $ch):
       <button class="player-copy-url" style="font-size:.85rem;padding:8px 18px" onclick="fallbackCopy(document.getElementById('player-ts-url').textContent);toast('URL copiada ✓')">📋 Copiar URL</button>
     </div>
     <video id="player-video" controls autoplay playsinline></video>
+    <div id="player-hls-error" style="display:none;background:#7f1d1d;color:#fca5a5;padding:8px 12px;border-radius:6px;font-size:.8rem;margin-top:8px;word-break:break-all"></div>
     <iframe id="player-iframe" src="about:blank" allowfullscreen></iframe>
     <div class="player-footer">
       <span class="player-url" id="player-url-display"></span>
@@ -1252,6 +1258,8 @@ function openPlayer(url, title) {
   urlDisp.textContent = url;
   unsup.style.display = 'none';
   video.style.display = 'block';
+  const errEl = document.getElementById('player-hls-error');
+  if(errEl){ errEl.style.display='none'; errEl.textContent=''; }
 
   // Destroy previous instance
   if (hlsInstance) { hlsInstance.destroy(); hlsInstance = null; }
@@ -1262,12 +1270,24 @@ function openPlayer(url, title) {
 
   if (isHLS) {
     if (Hls.isSupported()) {
-      hlsInstance = new Hls({ enableWorker: true, lowLatencyMode: true });
+      hlsInstance = new Hls({
+        enableWorker: false,
+        maxBufferLength: 30,
+        maxMaxBufferLength: 60,
+        xhrSetup: function(xhr) { xhr.withCredentials = false; }
+      });
       hlsInstance.loadSource(url);
       hlsInstance.attachMedia(video);
-      hlsInstance.on(Hls.Events.MANIFEST_PARSED, () => video.play().catch(()=>{}));
-      hlsInstance.on(Hls.Events.ERROR, (e, data) => {
-        if (data.fatal) toast('Error al cargar stream', 'err');
+      hlsInstance.on(Hls.Events.MANIFEST_PARSED, function() {
+        video.play().catch(function(){});
+      });
+      hlsInstance.on(Hls.Events.ERROR, function(e, data) {
+        console.error('HLS error:', data);
+        if (data.fatal) {
+          const errEl = document.getElementById('player-hls-error');
+          if(errEl) { errEl.textContent = 'Error: ' + data.type + ' — ' + (data.details||''); errEl.style.display='block'; }
+          toast('Error HLS: ' + (data.details||data.type), 'err');
+        }
       });
     } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
       video.src = url;
