@@ -67,11 +67,13 @@ function get_mysql_names() {
 }
 
 function get_channels() {
-    $files = array_merge(glob(LIB_NGINX . '/*.conf') ?: [], glob(NGINX_DIR . '/ng-*.conf') ?: []);
+    // Leer TODOS los fx*.conf del directorio activo (conf.d)
+    $files = glob(ACTIVE_DIR . '/fx*.conf') ?: [];
     $channels = [];
     foreach ($files as $f) {
-        $name = preg_replace(['/.*\/ng-/', '/\.conf$/'], '', basename($f));
-        if (!in_array($name, $channels)) $channels[] = $name;
+        $name = preg_replace('/\.conf$/', '', basename($f));
+        if (preg_match('/^fx\d+$/', $name) && !in_array($name, $channels))
+            $channels[] = $name;
     }
     sort($channels);
     return $channels;
@@ -440,6 +442,12 @@ tr:hover td{background:#1a2540}
 .edc-bw-fill{height:100%;background:#38bdf8;border-radius:2px;transition:width .5s}
 .edc-play-btn{background:#0ea5e9;color:#fff;border:none;border-radius:6px;padding:6px 14px;font-size:.78rem;font-weight:600;cursor:pointer;width:100%;transition:background .2s}
 .edc-play-btn:hover{background:#0284c7}
+.search-wrap{display:flex;align-items:center;gap:12px;margin-bottom:16px;padding:10px 14px;background:#0a1628;border:1px solid #1e293b;border-radius:10px}
+.search-wrap input{flex:1;background:#0f172a;border:1px solid #334155;border-radius:7px;padding:8px 14px;color:#e2e8f0;font-size:.88rem;outline:none;transition:border-color .2s}
+.search-wrap input:focus{border-color:#38bdf8}
+.search-wrap input::placeholder{color:#334155}
+.search-count{font-size:.78rem;color:#475569;white-space:nowrap;flex-shrink:0}
+.no-results{padding:32px;text-align:center;color:#334155;font-size:.88rem}
 .edc-token-btn{background:#d97706;color:#fff;border:none;border-radius:6px;padding:6px 10px;font-size:.78rem;font-weight:600;cursor:pointer;transition:background .2s}
 .edc-token-btn:hover{background:#b45309}
 .edc-token-btn:disabled{background:#334155;color:#475569;cursor:wait}
@@ -631,6 +639,12 @@ foreach($channels as $ch){ $s=get_supervisord_status($ch); if($s==='RUNNING') $r
     <h2>Canales nginx-rtmp</h2>
     <span class="badge-sm" id="b-running"><?= $running ?> RUNNING</span>
   </div>
+  <div class="search-wrap">
+    <span style="color:#38bdf8;font-size:1rem;flex-shrink:0">🔍</span>
+    <input type="text" id="ch-search" placeholder="Buscar por canal (fx0093) o nombre (FOX ONE)..." oninput="filterChannels(this.value)" autocomplete="off">
+    <span class="search-count" id="search-count"></span>
+    <button onclick="document.getElementById('ch-search').value='';filterChannels('');" style="background:none;border:none;color:#475569;cursor:pointer;font-size:1rem;padding:2px 6px" title="Limpiar">✕</button>
+  </div>
   <div class="tbl-wrap">
   <table>
     <thead><tr>
@@ -672,7 +686,7 @@ foreach($channels as $ch):
   $active_sys = 'nginx'; // default in this panel
   if ($hwowza && $wst === 'RUNNING' && $st !== 'RUNNING') $active_sys = 'wowza';
 ?>
-    <tr id="row-<?= $ch ?>">
+    <tr id="row-<?= $ch ?>" class="ch-main-row" data-ch="<?= $ch ?>" data-name="<?= strtolower(htmlspecialchars($name)) ?>">
       <td class="chk-col"><input type="checkbox" class="ch-chk" value="<?= $ch ?>"></td>
       <td>
         <div class="ch-id"><?= htmlspecialchars($ch) ?></div>
@@ -763,55 +777,7 @@ foreach($channels as $ch):
         </div>
       </td>
     </tr>
-<tr id="edgerow-<?= $ch ?>" class="edge-sub-row" style="display:none">
-  <td colspan="9" class="edge-sub-td">
-    <div class="edge-dist-grid" id="edgegrid-<?= $ch ?>">
-      <?php
-      $ei_list=[
-        ['id'=>'edge1','label'=>'Edge 1','ip'=>'186.233.186.55'],
-        ['id'=>'edge2','label'=>'Edge 2','ip'=>'186.233.186.58'],
-        ['id'=>'edge3','label'=>'Edge 3','ip'=>'198.147.24.146'],
-      ];
-      $ch_num=str_replace('fx','',$ch);
-      foreach($ei_list as $ei): ?>
-      <div class="edc" id="edc-<?= $ch ?>-<?= $ei['id'] ?>">
-        <div class="edc-header">
-          <span class="edc-dot unknown" id="edcdot-<?= $ch ?>-<?= $ei['id'] ?>"></span>
-          <span class="edc-name"><?= $ei['label'] ?></span>
-          <span class="edc-ip"><?= $ei['ip'] ?></span>
-        </div>
-        <div class="edc-stats-row">
-          <div class="edc-stat">
-            <span class="edc-stat-label">👁 Viewers</span>
-            <span class="edc-stat-value vw-val" id="edcvw-<?= $ch ?>-<?= $ei['id'] ?>">—</span>
-          </div>
-          <div class="edc-stat">
-            <span class="edc-stat-label">📤 BW Salida</span>
-            <span class="edc-stat-value" id="edcbw-<?= $ch ?>-<?= $ei['id'] ?>">—</span>
-          </div>
-          <div class="edc-stat">
-            <span class="edc-stat-label">📶 Req/30s</span>
-            <span class="edc-stat-value" id="edcreq-<?= $ch ?>-<?= $ei['id'] ?>">—</span>
-          </div>
-        </div>
-        <div class="edc-bw-bg">
-          <div class="edc-bw-fill" id="edcbar-<?= $ch ?>-<?= $ei['id'] ?>" style="width:0%"></div>
-        </div>
-        <div style="display:flex;gap:5px;margin-top:2px">
-          <button class="edc-token-btn" style="flex:1"
-            id="tkbtn-<?= $ch ?>-<?= $ei['id'] ?>"
-            onclick="playWithToken('<?= $ch ?>','<?= $ch_num ?>','<?= $ei['id'] ?>','<?= $ei['ip'] ?>','<?= $ei['label'] ?>')">
-            🔑 Play con Token
-          </button>
-          <a class="edc-play-btn" style="flex:0 0 34px;text-align:center;text-decoration:none;background:#0f172a;border:1px solid #334155;color:#64748b"
-            href="http://<?= $ei['ip'] ?>/01hbx<?= $ch_num ?>c6WI3k/myStream/playlist.m3u8"
-            target="_blank" title="URL del edge (requiere token)">🔗</a>
-        </div>
-      </div>
-      <?php endforeach ?>
-    </div>
-  </td>
-</tr>
+<!-- edge-sub-row se genera por JS en toggleEdges() -->
 <?php endforeach ?>
     </tbody>
   </table>
@@ -1377,5 +1343,106 @@ async function playWithToken(ch,chNum,edgeId,edgeIp,edgeLabel){
     toast('Token valido 2h \u2713');
   }catch(e){ toast('Error: '+e.message,'err'); }
   finally{ if(btn){ btn.disabled=false; btn.textContent='\uD83D\uDD11 Token'; } }
+}
+</script>
+<script>
+// ── Buscador de canales ─────────────────────────────────────────────────
+(function initSearch(){
+  const rows = document.querySelectorAll('tr.ch-main-row');
+  const countEl = document.getElementById('search-count');
+  if(countEl) countEl.textContent = rows.length + ' canales';
+})();
+
+let _searchTimer = null;
+function filterChannels(val){
+  clearTimeout(_searchTimer);
+  _searchTimer = setTimeout(function(){
+    const q = val.trim().toLowerCase();
+    const rows = document.querySelectorAll('tr.ch-main-row');
+    let shown = 0;
+    rows.forEach(function(tr){
+      const ch   = (tr.dataset.ch   || '').toLowerCase();
+      const name = (tr.dataset.name || '').toLowerCase();
+      const match = !q || ch.includes(q) || name.includes(q);
+      tr.style.display = match ? '' : 'none';
+      // Ocultar edge sub-row si el canal se oculta
+      const er = document.getElementById('edgerow-' + tr.dataset.ch);
+      if(er && !match) er.style.display = 'none';
+      if(match) shown++;
+    });
+    const countEl = document.getElementById('search-count');
+    if(countEl) countEl.textContent = shown + ' canal' + (shown !== 1 ? 'es' : '');
+    // Mostrar mensaje si no hay resultados
+    let noRes = document.getElementById('no-results-row');
+    if(shown === 0 && q){
+      if(!noRes){
+        const tbody = document.querySelector('tbody');
+        const tr = document.createElement('tr');
+        tr.id = 'no-results-row';
+        tr.innerHTML = '<td colspan="9" class="no-results">Sin resultados para "'+val+'"</td>';
+        tbody.appendChild(tr);
+      } else { noRes.style.display = ''; }
+    } else if(noRes){ noRes.style.display = 'none'; }
+  }, 150);
+}
+
+// ── Edge sub-row generado dinámicamente ────────────────────────────────
+const EDGE_LIST = [
+  {id:'edge1', label:'Edge 1', ip:'186.233.186.55'},
+  {id:'edge2', label:'Edge 2', ip:'186.233.186.58'},
+  {id:'edge3', label:'Edge 3', ip:'198.147.24.146'}
+];
+
+function buildEdgeSubRow(ch){
+  const chNum = ch.replace('fx','');
+  let html = '<tr id="edgerow-'+ch+'" class="edge-sub-row" style="display:none">'
+           + '<td colspan="9" class="edge-sub-td">'
+           + '<div class="edge-dist-grid" id="edgegrid-'+ch+'">';
+  EDGE_LIST.forEach(function(ei){
+    html +=
+      '<div class="edc" id="edc-'+ch+'-'+ei.id+'">'
+      +'<div class="edc-header">'
+      +'<span class="edc-dot unknown" id="edcdot-'+ch+'-'+ei.id+'"></span>'
+      +'<span class="edc-name">'+ei.label+'</span>'
+      +'<span class="edc-ip">'+ei.ip+'</span>'
+      +'</div>'
+      +'<div class="edc-stats-row">'
+      +'<div class="edc-stat"><span class="edc-stat-label">&#128065; Viewers</span>'
+      +'<span class="edc-stat-value vw-val" id="edcvw-'+ch+'-'+ei.id+'">&#8212;</span></div>'
+      +'<div class="edc-stat"><span class="edc-stat-label">&#128228; BW Salida</span>'
+      +'<span class="edc-stat-value" id="edcbw-'+ch+'-'+ei.id+'">&#8212;</span></div>'
+      +'<div class="edc-stat"><span class="edc-stat-label">&#128246; Req/30s</span>'
+      +'<span class="edc-stat-value" id="edcreq-'+ch+'-'+ei.id+'">&#8212;</span></div>'
+      +'</div>'
+      +'<div class="edc-bw-bg"><div class="edc-bw-fill" id="edcbar-'+ch+'-'+ei.id+'" style="width:0%"></div></div>'
+      +'<div style="display:flex;gap:5px;margin-top:2px">'
+      +'<button class="edc-token-btn" style="flex:1" id="tkbtn-'+ch+'-'+ei.id+'"'
+      +' onclick="playWithToken(\''+ch+'\',\''+chNum+'\',\''+ei.id+'\',\''+ei.ip+'\',\''+ei.label+'\')">'
+      +'&#128273; Play con Token</button>'
+      +'<a class="edc-play-btn" style="flex:0 0 34px;text-align:center;text-decoration:none;background:#0f172a;border:1px solid #334155;color:#64748b"'
+      +' href="http://'+ei.ip+'/01hbx'+chNum+'c6WI3k/myStream/playlist.m3u8"'
+      +' target="_blank" title="URL del edge (requiere token)">&#128279;</a>'
+      +'</div>'
+      +'</div>';
+  });
+  html += '</div></td></tr>';
+  return html;
+}
+
+// Sobreescribir toggleEdges para crear sub-row on demand
+function toggleEdges(ch){
+  const mainRow = document.getElementById('row-'+ch);
+  const btn = document.getElementById('ebtn-'+ch);
+  let edgeRow = document.getElementById('edgerow-'+ch);
+  // Crear si no existe
+  if(!edgeRow && mainRow){
+    mainRow.insertAdjacentHTML('afterend', buildEdgeSubRow(ch));
+    edgeRow = document.getElementById('edgerow-'+ch);
+  }
+  if(!edgeRow) return;
+  const open = edgeRow.style.display !== 'none';
+  edgeRow.style.display = open ? 'none' : 'table-row';
+  if(btn) btn.classList.toggle('open', !open);
+  if(!open) fetchEdgeData();
 }
 </script>
