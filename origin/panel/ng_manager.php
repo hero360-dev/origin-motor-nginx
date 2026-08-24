@@ -440,6 +440,9 @@ tr:hover td{background:#1a2540}
 .edc-bw-fill{height:100%;background:#38bdf8;border-radius:2px;transition:width .5s}
 .edc-play-btn{background:#0ea5e9;color:#fff;border:none;border-radius:6px;padding:6px 14px;font-size:.78rem;font-weight:600;cursor:pointer;width:100%;transition:background .2s}
 .edc-play-btn:hover{background:#0284c7}
+.edc-token-btn{background:#d97706;color:#fff;border:none;border-radius:6px;padding:6px 10px;font-size:.78rem;font-weight:600;cursor:pointer;transition:background .2s}
+.edc-token-btn:hover{background:#b45309}
+.edc-token-btn:disabled{background:#334155;color:#475569;cursor:wait}
 .abtn.a-edges{background:#0ea5e920;color:#38bdf8;border:1px solid #38bdf840;font-size:.75rem}
 .abtn.a-edges:hover{background:#0ea5e940}
 .abtn.a-edges.open{background:#38bdf820;border-color:#38bdf8;color:#7dd3fc}
@@ -794,14 +797,19 @@ foreach($channels as $ch):
         <div class="edc-bw-bg">
           <div class="edc-bw-fill" id="edcbar-<?= $ch ?>-<?= $ei['id'] ?>" style="width:0%"></div>
         </div>
-        <div style="display:flex;gap:6px;margin-top:2px">
-          <button class="edc-play-btn" style="flex:2"
+        <div style="display:flex;gap:5px;margin-top:2px;flex-wrap:wrap">
+          <button class="edc-play-btn" style="flex:2;min-width:55px"
             onclick="playFromEdge('<?= $ch_num ?>','<?= $ei['ip'] ?>','<?= $ei['label'] ?>')">
             ▶ Play
           </button>
-          <a class="edc-play-btn" style="flex:1;text-align:center;text-decoration:none;background:#0f172a;border:1px solid #334155;color:#64748b"
+          <button class="edc-token-btn" style="flex:2;min-width:70px"
+            id="tkbtn-<?= $ch ?>-<?= $ei['id'] ?>"
+            onclick="playWithToken('<?= $ch ?>','<?= $ch_num ?>','<?= $ei['id'] ?>','<?= $ei['ip'] ?>','<?= $ei['label'] ?>')">
+            🔑 Token
+          </button>
+          <a class="edc-play-btn" style="flex:0 0 30px;text-align:center;text-decoration:none;background:#0f172a;border:1px solid #334155;color:#64748b"
             href="http://<?= $ei['ip'] ?>/01hbx<?= $ch_num ?>c6WI3k/myStream/playlist.m3u8"
-            target="_blank" title="Abrir URL en nueva pestaña">🔗</a>
+            target="_blank" title="Abrir sin token">🔗</a>
         </div>
       </div>
       <?php endforeach ?>
@@ -1349,3 +1357,28 @@ refreshStats();
 </div><!-- /main-wrap -->
 </body>
 </html>
+<script>
+let _clientIP=null;
+async function getClientIP(){
+  if(_clientIP) return _clientIP;
+  try{ const r=await fetch('https://api64.ipify.org?format=json'); _clientIP=(await r.json()).ip; return _clientIP; }
+  catch(e){ return null; }
+}
+async function playWithToken(ch,chNum,edgeId,edgeIp,edgeLabel){
+  const btn=document.getElementById('tkbtn-'+ch+'-'+edgeId);
+  if(btn){ btn.disabled=true; btn.textContent='...'; }
+  try{
+    const ip=await getClientIP();
+    if(!ip){ toast('No se pudo obtener la IP','err'); return; }
+    const r=await fetch('ng_token_generate.php?fx='+encodeURIComponent(ch)+'&ip='+encodeURIComponent(ip));
+    if(!r.ok){ toast('Error '+r.status+' al generar token','err'); return; }
+    const data=await r.json();
+    if(!data.success){ toast('Error: '+(data.error||'desconocido'),'err'); return; }
+    const ed=data.urls[edgeId];
+    if(!ed){ toast('Edge no encontrado','err'); return; }
+    openPlayer(ed.url, ch+' — '+edgeLabel+' (token)');
+    toast('Token valido 2h \u2713');
+  }catch(e){ toast('Error: '+e.message,'err'); }
+  finally{ if(btn){ btn.disabled=false; btn.textContent='\uD83D\uDD11 Token'; } }
+}
+</script>

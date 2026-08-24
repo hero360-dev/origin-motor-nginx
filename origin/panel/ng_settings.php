@@ -38,7 +38,19 @@ body{font-family:'Segoe UI',sans-serif;background:#0f172a;color:#e2e8f0;display:
 .content{padding:24px;max-width:920px}.section{background:#1e293b;border:1px solid #334155;border-radius:12px;padding:22px;margin-bottom:18px}.section h2{font-size:1rem;color:#38bdf8;margin-bottom:14px;padding-bottom:8px;border-bottom:1px solid #334155}.info-row{display:flex;justify-content:space-between;align-items:center;padding:9px 0;border-bottom:1px solid #0f172a;font-size:.85rem}.info-row:last-child{border-bottom:none}.info-lbl{color:#64748b}.info-val{color:#e2e8f0;font-family:monospace;font-size:.82rem;background:#0f172a;padding:3px 10px;border-radius:5px;max-width:60%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.badge-ok{color:#22c55e;background:#22c55e15;padding:3px 10px;border-radius:10px;font-size:.78rem}.badge-off{color:#ef4444;background:#ef444415;padding:3px 10px;border-radius:10px;font-size:.78rem}</style></head><body><div class="sidebar" id="sidebar">
 <div class="sb-logo"><span>&#9889;</span><span class="sb-logo-text">Nginx Stream</span>
 <button class="sb-toggle" onclick="toggleSidebar()">&#9776;</button></div>
-<div class="sb-user"><div class="sb-clock" id="sb-clock">--:--:--</div></div>
+<div class="sb-user"><div class="sb-clock" id="sb-clock">--:--:--</div>
+<div class="section"><h2></div></div>#128273; Token de Seguridad nginx</h2>
+<div class="info-row"><span class="info-lbl">Secreto actual</span><span class="info-val" id="token-secret-display">Cargando...</span></div>
+<div class="info-row"><span class="info-lbl">Algoritmo</span><span class="info-val">MD5 + IP + tiempo (nginx secure_link)</span></div>
+<div class="info-row"><span class="info-lbl">Validez</span><span class="info-val">2 horas por sesion</span></div>
+<div class="info-row"><span class="info-lbl">Edges protegidos</span><span class="info-val">Edge1, Edge2, Edge3 (.m3u8)</span></div>
+<div style="margin-top:12px;display:flex;gap:10px;align-items:center">
+<button id="btn-regen" onclick="regenToken()" style="background:#d97706;color:#fff;border:none;padding:8px 18px;border-radius:7px;font-size:.85rem;font-weight:600;cursor:pointer">Regenerar secreto</button>
+<span id="regen-status" style="color:#64748b;font-size:.8rem"></span>
+</div>
+<p style="color:#334155;font-size:.72rem;margin-top:6px">* Doble clic requerido. Actualiza origin y sincroniza a los 3 edges via SSH.</p>
+</div>
+</div></div>
 <nav class="sb-nav">
 <a class="sb-item" href="ng_dashboard.php"><span class="sb-icon">&#128202;</span><span class="sb-label">Dashboard</span></a>
 <a class="sb-item" href="ng_manager.php"><span class="sb-icon">&#128225;</span><span class="sb-label">Canales</span></a>
@@ -66,6 +78,18 @@ body{font-family:'Segoe UI',sans-serif;background:#0f172a;color:#e2e8f0;display:
 <div class="info-row"><span class="info-lbl">Usuario activo</span><span class="info-val">ngadmin</span></div>
 <div class="info-row"><span class="info-lbl">Timeout inactividad</span><span class="info-val">2 horas</span></div>
 <div class="info-row"><span class="info-lbl">Auto-refresh panel</span><span class="info-val">Cada 5 segundos</span></div>
+</div>
+</div>
+<div class="section"><h2></div></div>#128273; Token de Seguridad nginx</h2>
+<div class="info-row"><span class="info-lbl">Secreto actual</span><span class="info-val" id="token-secret-display">Cargando...</span></div>
+<div class="info-row"><span class="info-lbl">Algoritmo</span><span class="info-val">MD5 + IP + tiempo (nginx secure_link)</span></div>
+<div class="info-row"><span class="info-lbl">Validez</span><span class="info-val">2 horas por sesion</span></div>
+<div class="info-row"><span class="info-lbl">Edges protegidos</span><span class="info-val">Edge1, Edge2, Edge3 (.m3u8)</span></div>
+<div style="margin-top:12px;display:flex;gap:10px;align-items:center">
+<button id="btn-regen" onclick="regenToken()" style="background:#d97706;color:#fff;border:none;padding:8px 18px;border-radius:7px;font-size:.85rem;font-weight:600;cursor:pointer">Regenerar secreto</button>
+<span id="regen-status" style="color:#64748b;font-size:.8rem"></span>
+</div>
+<p style="color:#334155;font-size:.72rem;margin-top:6px">* Doble clic requerido. Actualiza origin y sincroniza a los 3 edges via SSH.</p>
 </div>
 </div></div>
 <script>
@@ -100,4 +124,42 @@ async function loadStatus(){
   document.getElementById('cfg-upd').textContent = new Date().toLocaleTimeString('es',{hour:'2-digit',minute:'2-digit',second:'2-digit'});
 }
 loadStatus();
+
+// Cargar secreto enmascarado
+async function loadTokenSecret() {
+  try {
+    const r = await fetch('ng_token_info.php');
+    const d = await r.json();
+    if(d.masked) document.getElementById('token-secret-display').textContent = d.masked;
+  } catch(e) {}
+}
+
+let regenClick = 0;
+async function regenToken() {
+  regenClick++;
+  const btn = document.getElementById('btn-regen');
+  const st  = document.getElementById('regen-status');
+  if(regenClick === 1){
+    st.textContent = 'Haz clic una vez mas para confirmar.';
+    setTimeout(()=>{ regenClick=0; st.textContent=''; }, 5000);
+    return;
+  }
+  regenClick = 0;
+  btn.disabled = true; st.textContent = 'Regenerando...';
+  try {
+    const r = await fetch('ng_token_regen.php', {method:'POST', credentials:'same-origin'});
+    const d = await r.json();
+    if(d.success){
+      st.textContent = 'Secreto regenerado y sincronizado a edges ✓';
+      st.style.color = '#22c55e';
+      loadTokenSecret();
+    } else {
+      st.textContent = 'Error: ' + (d.error||'desconocido');
+      st.style.color = '#ef4444';
+    }
+  } catch(e){ st.textContent = 'Error de red'; st.style.color='#ef4444'; }
+  finally { btn.disabled=false; }
+}
+loadStatus();
+loadTokenSecret();
 </script></body></html>
