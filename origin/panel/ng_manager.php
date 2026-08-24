@@ -180,6 +180,35 @@ function get_source_url($ch) {
     return '';
 }
 
+function generate_nginx_conf(string $ch, string $active_content): string {
+    // Genera conf para nginx reemplazando el destino RTMP
+    $conf = $active_content;
+    // Normalizar audio: quitar -strict -2 y agregar bitrate/sample si falta
+    $conf = preg_replace('/-c:a aac -strict -2/', '-c:a aac -b:a 128k -ar 48000 -ac 2', $conf);
+    // Reemplazar destino RTMP (Wowza → nginx local)
+    // Patrones: rtmp://USER:PASS@host:1935/APPNAME/myStream
+    $conf = preg_replace(
+        '/-f flv rtmp:\/\/[^ \n]+/',
+        "-f flv rtmp://127.0.0.1:1936/live/$ch",
+        $conf
+    );
+    return $conf;
+}
+
+function generate_wowza_conf(string $ch, string $active_content): string {
+    // Genera conf para Wowza reemplazando el destino RTMP
+    $conf = $active_content;
+    // Normalizar audio para Wowza
+    $conf = preg_replace('/-c:a aac -b:a 128k -ar 48000 -ac 2/', '-c:a aac -strict -2', $conf);
+    // Reemplazar destino nginx → Wowza
+    $conf = preg_replace(
+        '/-f flv rtmp:\/\/127\.0\.0\.1:1936\/live\/\S+/',
+        "-f flv rtmp://prov:prov001@localhost:1935/$ch/myStream",
+        $conf
+    );
+    return $conf;
+}
+
 function has_wowza_config($ch) {
     return file_exists(WOWZA_DIR . "/$ch.conf") || file_exists(LIB_WOWZA . "/$ch.conf");
 }
@@ -271,22 +300,50 @@ if (!empty($_SESSION['ng_auth']) && isset($_GET['api'])) {
         $ch     = preg_replace('/[^a-zA-Z0-9_-]/', '', $_GET['ch']);
         $target = $_GET['target'] === 'wowza' ? 'wowza' : 'nginx';
         $result = ['ok'=>false,'msg'=>''];
-        if ($target === 'wowza' && has_wowza_config($ch)) {
-            $lib = LIB_WOWZA . "/$ch.conf";
+        if ($target === 'wowza') {
+            $lib    = LIB_WOWZA . "/$ch.conf";
+            $active = ACTIVE_DIR . "/$ch.conf";
+            // Auto-generar template Wowza si no existe
+            if (!file_exists($lib) && file_exists($active)) {
+                $src = file_get_contents($active);
+                $wowza_conf = generate_wowza_conf($ch, $src);
+                @file_put_contents($lib, $wowza_conf);
+                @chmod($lib, 0644);
+            }
             if (file_exists($lib)) {
                 shell_exec("sudo supervisorctl stop $ch > /dev/null 2>&1");
-                shell_exec("sudo cp " . escapeshellarg($lib) . " " . escapeshellarg(ACTIVE_DIR . "/$ch.conf") . " 2>/dev/null");
+                shell_exec("sudo cp " . escapeshellarg($lib) . " " . escapeshellarg($active) . " 2>/dev/null");
                 shell_exec("(sudo supervisorctl reread && sudo supervisorctl update $ch && sudo supervisorctl start $ch) > /dev/null 2>&1 &");
             }
             $result = ['ok'=>true,'msg'=>"$ch → Wowza"];
         } elseif ($target === 'nginx') {
-            $lib = LIB_NGINX . "/$ch.conf";
+            $lib        = LIB_NGINX . "/$ch.conf";
+            $active     = ACTIVE_DIR . "/$ch.conf";
+            $lib_wowza  = LIB_WOWZA . "/$ch.conf";
+            // Guardar snapshot Wowza en library si no existe (para poder revertir)
+            if (file_exists($active) && !file_exists($lib_wowza)) {
+                $wowza_content = file_get_contents($active);
+                // Solo guardar si es conf de Wowza
+                if (strpos($wowza_content, ':1935') !== false) {
+                    @file_put_contents($lib_wowza, $wowza_content);
+                    @chmod($lib_wowza, 0644);
+                }
+            }
+            // Auto-generar template nginx si no existe
+            if (!file_exists($lib) && file_exists($active)) {
+                $src = file_get_contents($active);
+                $nginx_conf = generate_nginx_conf($ch, $src);
+                @file_put_contents($lib, $nginx_conf);
+                @chmod($lib, 0644);
+            }
             if (file_exists($lib)) {
                 shell_exec("sudo supervisorctl stop $ch > /dev/null 2>&1");
-                shell_exec("sudo cp " . escapeshellarg($lib) . " " . escapeshellarg(ACTIVE_DIR . "/$ch.conf") . " 2>/dev/null");
+                shell_exec("sudo cp " . escapeshellarg($lib) . " " . escapeshellarg($active) . " 2>/dev/null");
                 shell_exec("(sudo supervisorctl reread && sudo supervisorctl update $ch && sudo supervisorctl start $ch) > /dev/null 2>&1 &");
+                $result = ['ok'=>true,'msg'=>"$ch → nginx"];
+            } else {
+                $result = ['ok'=>false,'msg'=>"$ch: no se pudo generar conf nginx"];
             }
-            $result = ['ok'=>true,'msg'=>"$ch → nginx"];
         }
         echo json_encode($result);
         exit;
