@@ -161,3 +161,90 @@ curl http://localhost:8090/stat
 # Viewers en tiempo real (origin)
 tail -f /var/log/nginx/access.log | grep '.m3u8'
 ```
+
+## Sistema de Token de Seguridad (nginx SecureToken)
+
+### Cómo funciona
+
+Equivalente al Wowza SecureToken v2. Protege las URLs `.m3u8` de los edges con IP binding + tiempo de expiración.
+
+**Fórmula del hash** (nginx `secure_link` module):
+```
+string = "{expires}{uri}{remote_addr} {NGINX_TOKEN_SECRET}"
+hash   = MD5(string) → base64 → URL-safe (+ → -, / → _, sin =)
+```
+
+**URL con token:**
+```
+http://EDGE_IP/01hbxNNNNc6WI3k/myStream/playlist.m3u8?ngtk=HASH&ngte=EXPIRES
+```
+
+**Sin token → 403 | Token expirado → 410 | Token válido → 200**
+
+### Archivos clave del token
+
+| Archivo | Descripción |
+|---|---|
+| `/etc/casino-secrets.env` | Contiene `NGINX_TOKEN_SECRET=...` (48 chars hex) |
+| `/var/www/html/ng_token_generate.php` | Genera token para los 3 edges vía AJAX |
+| `/var/www/html/ng_token_info.php` | Devuelve secreto enmascarado para Settings |
+| `/var/www/html/ng_token_regen.php` | Regenera secreto y sincroniza a edges vía SSH |
+| `/etc/nginx/nginx.conf` (edges) | Tiene `secure_link` en location del `.m3u8` |
+
+### Flujo desde el panel
+
+1. Usuario abre sub-fila de un canal (botón 🌐)
+2. Presiona **🔑 Play con Token** en un edge
+3. JS llama `https://api.ipify.org` → obtiene IPv4 pública del cliente
+4. JS llama `ng_token_generate.php?fx=fxNNNN&ip=CLIENT_IP`
+5. PHP lee secreto del env, genera hash MD5, devuelve URL con token para los 3 edges
+6. HLS.js reproduce la URL del edge → edge valida con `secure_link` → 200 ✓
+
+### Problemas comunes y soluciones
+
+**Error 500 al generar token:**
+- Causa: `parse_ini_file()` falla si `/etc/casino-secrets.env` tiene paréntesis `()` en comentarios
+- Solución: El código usa parser manual línea por línea (ya corregido)
+- Verificar: `php -r "foreach(file('/etc/casino-secrets.env', FILE_IGNORE_NEW_LINES|FILE_SKIP_EMPTY_LINES) as \$l){ if(\$l[0]==='#') continue; if(strpos(\$l,'NGINX_TOKEN_SECRET=')===0){echo 'OK: '.strlen(substr(\$l,19)).' chars';break;} }"`
+
+**Token da 403 aunque parece correcto:**
+- Causa A: IP del cliente que ipify devuelve ≠ IP que el edge ve (NAT, CGNAT, IPv6)
+  - Solución: Cambiar `api64.ipify.org` → `api.ipify.org` (IPv4 forzado)
+- Causa B: El secreto en el edge difiere del de origin (desincronizado)
+  - Solución: Usar "Regenerar secreto" en Configuración → re-sincroniza los 3 edges
+
+**Verificar token manualmente desde origin:**
+```bash
+SECRET=$(grep "NGINX_TOKEN_SECRET" /etc/casino-secrets.env | cut -d'=' -f2)
+EXPIRES=$(( $(date +%s) + 7200 ))
+URI="/01hbxNNNNc6WI3k/myStream/playlist.m3u8"
+IP="IP_DEL_CLIENTE"
+HASH=$(echo -n "${EXPIRES}${URI}${IP} ${SECRET}" | openssl dgst -md5 -binary | openssl base64 | tr '+/' '-_' | tr -d '=')
+curl -I "http://186.233.186.55${URI}?ngtk=${HASH}&ngte=${EXPIRES}"
+# Esperado: HTTP/1.1 200 OK
+```
+
+**Regenerar secreto manualmente (sin panel):**
+```bash
+NEW=$(openssl rand -hex 24)
+sed -i "s/^NGINX_TOKEN_SECRET=.*/NGINX_TOKEN_SECRET=${NEW}/" /etc/casino-secrets.env
+for edge in edge1 edge2 edge3; do
+  ssh $edge "sed -i 's|secure_link_md5 \"[^\"]*\"|secure_link_md5 \"\$secure_link_expires\$uri\$remote_addr ${NEW}\"|g' /etc/nginx/nginx.conf && nginx -s reload"
+done
+```
+
+### nginx secure_link en edges (config actual)
+
+```nginx
+location ~ ^/01hbx([0-9]+)c6WI3k/myStream/playlist\.m3u8$ {
+    set $ch $1;
+    secure_link $arg_ngtk,$arg_ngte;
+    secure_link_md5 "$secure_link_expires$uri$remote_addr NGINX_TOKEN_SECRET";
+    if ($secure_link = "")  { return 403; }  # token invalido/ausente
+    if ($secure_link = "0") { return 410; }  # token expirado
+    proxy_pass http://23.137.84.97:8090/hls/fx${ch}/index.m3u8;
+    # ... resto del proxy config
+}
+```
+
+**Nota:** `nginx-extras` (Ubuntu 18.04) o `nginx` oficial de nginx.org incluyen `secure_link`. El paquete `nginx-core` de Ubuntu NO lo incluye.

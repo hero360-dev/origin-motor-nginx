@@ -797,19 +797,15 @@ foreach($channels as $ch):
         <div class="edc-bw-bg">
           <div class="edc-bw-fill" id="edcbar-<?= $ch ?>-<?= $ei['id'] ?>" style="width:0%"></div>
         </div>
-        <div style="display:flex;gap:5px;margin-top:2px;flex-wrap:wrap">
-          <button class="edc-play-btn" style="flex:2;min-width:55px"
-            onclick="playFromEdge('<?= $ch_num ?>','<?= $ei['ip'] ?>','<?= $ei['label'] ?>')">
-            ▶ Play
-          </button>
-          <button class="edc-token-btn" style="flex:2;min-width:70px"
+        <div style="display:flex;gap:5px;margin-top:2px">
+          <button class="edc-token-btn" style="flex:1"
             id="tkbtn-<?= $ch ?>-<?= $ei['id'] ?>"
             onclick="playWithToken('<?= $ch ?>','<?= $ch_num ?>','<?= $ei['id'] ?>','<?= $ei['ip'] ?>','<?= $ei['label'] ?>')">
-            🔑 Token
+            🔑 Play con Token
           </button>
-          <a class="edc-play-btn" style="flex:0 0 30px;text-align:center;text-decoration:none;background:#0f172a;border:1px solid #334155;color:#64748b"
+          <a class="edc-play-btn" style="flex:0 0 34px;text-align:center;text-decoration:none;background:#0f172a;border:1px solid #334155;color:#64748b"
             href="http://<?= $ei['ip'] ?>/01hbx<?= $ch_num ?>c6WI3k/myStream/playlist.m3u8"
-            target="_blank" title="Abrir sin token">🔗</a>
+            target="_blank" title="URL del edge (requiere token)">🔗</a>
         </div>
       </div>
       <?php endforeach ?>
