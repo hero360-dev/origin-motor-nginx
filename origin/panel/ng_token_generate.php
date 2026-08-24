@@ -59,7 +59,7 @@ $expires = time() + 7200;
 // Fórmula nginx secure_link_md5: "{expires}{uri}{remote_addr} {secret}"
 // remote_addr = IP del cliente que nginx recibirá
 function makeToken(string $expires, string $uri, string $ip, string $secret): string {
-    $str    = "{$expires}{$uri} {$secret}"; // Sin IP: mas robusto con IPv6/CGNAT
+    $str    = "{$expires}{$uri}{$ip} {$secret}"; // Con IP binding (como Wowza SecureToken)
     $binary = md5($str, true);
     return rtrim(strtr(base64_encode($binary), '+/', '-_'), '=');
 }

@@ -1362,7 +1362,7 @@ refreshStats();
 let _clientIP=null;
 async function getClientIP(){
   if(_clientIP) return _clientIP;
-  try{ const r=await fetch('https://api64.ipify.org?format=json'); _clientIP=(await r.json()).ip; return _clientIP; }
+  try{ const r=await fetch('https://api.ipify.org?format=json'); _clientIP=(await r.json()).ip; return _clientIP; }
   catch(e){ return null; }
 }
 async function playWithToken(ch,chNum,edgeId,edgeIp,edgeLabel){
