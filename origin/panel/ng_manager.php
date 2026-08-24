@@ -931,8 +931,9 @@ function updateEdgeRows() {
 }
 
 function playFromEdge(chNum, edgeIp, edgeLabel) {
-  const url = 'http://' + edgeIp + '/01hbx' + chNum + 'c6WI3k/myStream/playlist.m3u8';
-  openPlayer(url, 'fx' + chNum + ' — ' + edgeLabel);
+  // Reproducir desde origin directamente (sin token, para monitoreo)
+  const url = 'http://23.137.84.97:8090/hls/fx' + chNum + '/index.m3u8';
+  openPlayer(url, 'fx' + chNum + ' — Origin (preview)');
 }
 
 // Auto-refresh edge data every 10s if any row is open
