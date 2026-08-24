@@ -11,8 +11,15 @@ if(empty($_SESSION['ng_auth'])){ http_response_code(403); echo json_encode(['err
 $envFile = '/etc/casino-secrets.env';
 $secret  = '';
 if(file_exists($envFile)){
-    $vars = parse_ini_file($envFile);
-    $secret = $vars['NGINX_TOKEN_SECRET'] ?? '';
+    // Usar parser manual: parse_ini_file falla con paréntesis en comentarios
+    foreach(file($envFile, FILE_IGNORE_NEW_LINES|FILE_SKIP_EMPTY_LINES) as $line){
+        $line = trim($line);
+        if($line==='' || $line[0]==='#' || $line[0]===';') continue;
+        if(strpos($line,'NGINX_TOKEN_SECRET=')===0){
+            $secret = substr($line, strlen('NGINX_TOKEN_SECRET='));
+            break;
+        }
+    }
 }
 if(empty($secret)){
     http_response_code(500);
