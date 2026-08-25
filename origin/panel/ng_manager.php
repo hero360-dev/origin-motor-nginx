@@ -58,7 +58,12 @@ function get_mysql_names() {
         $dsn = "mysql:host={$s['MYSQL_TUNNEL_HOST']};port={$s['MYSQL_TUNNEL_PORT']};dbname={$s['MYSQL_TUNNEL_DB']};charset=utf8";
         $pdo = new PDO($dsn, $s['MYSQL_TUNNEL_USER'], $s['MYSQL_TUNNEL_PASS'],
             [PDO::ATTR_TIMEOUT => 2, PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]);
-        $stmt = $pdo->query("SELECT st_before, descripcion FROM stvchannels_lat WHERE st_before IS NOT NULL");
+        // Cargar nombres de AMBAS tablas (lat = canales generales, porn = canales adultos)
+        $stmt = $pdo->query("
+            SELECT st_before, descripcion FROM stvchannels_lat  WHERE st_before IS NOT NULL
+            UNION ALL
+            SELECT st_before, descripcion FROM stvchannels_porn WHERE st_before IS NOT NULL
+        ");
         foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
             $cache[$row['st_before']] = $row['descripcion'];
         }
