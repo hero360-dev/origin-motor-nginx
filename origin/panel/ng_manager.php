@@ -240,13 +240,13 @@ function has_wowza_config($ch) {
 }
 
 function get_channel_system($ch) {
-    // Read active conf to determine current system
+    static $cache = [];
+    if (isset($cache[$ch])) return $cache[$ch];
     $active = ACTIVE_DIR . "/$ch.conf";
-    if (!file_exists($active)) return 'nginx'; // default
-    $content = file_get_contents($active);
-    if (strpos($content, ':1935') !== false) return 'wowza';
-    if (strpos($content, ':1936') !== false) return 'nginx';
-    return 'nginx';
+    if (!file_exists($active)) { $cache[$ch]='nginx'; return 'nginx'; }
+    $c = file_get_contents($active);
+    $cache[$ch] = (strpos($c, ':1935') !== false) ? 'wowza' : 'nginx';
+    return $cache[$ch];
 }
 
 function get_wowza_status($ch) {
@@ -305,7 +305,8 @@ if (!empty($_SESSION['ng_auth']) && isset($_GET['api'])) {
                 'hls_segs'  => $hls['segments'],
                 'hls_age'   => $hls['age'],
                 'wowza_st'  => get_wowza_status($ch),
-                'system'    => get_channel_system($ch),
+                // Only check system for RUNNING channels (performance: avoids 700 file reads)
+                'system'    => ($st === 'RUNNING') ? get_channel_system($ch) : null,
             ];
         }
         echo json_encode($result);
@@ -1371,10 +1372,7 @@ function refreshStats() {
       if (sAvl) sAvl.textContent = (tot>0?Math.round(running_count/tot*100):0)+'%';
       if (bRun) bRun.textContent = running_count + ' RUNNING';
 
-      // Update switch toggles from stats
-      for (const [ch, d] of Object.entries(data)) {
-        if (d.system) updateSwitchFromData(ch, d.system);
-      }
+      // Switch toggles are set on page load; updated via switchCh() response only
       const ts = new Date().toLocaleTimeString('es',{hour:'2-digit',minute:'2-digit',second:'2-digit'});
       const ref = document.getElementById('last-refresh');
       if (ref) ref.textContent = 'Actualizado: ' + ts;
