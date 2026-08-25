@@ -806,7 +806,7 @@ foreach($channels as $ch):
           <button class="url-icon-btn play-src" onclick="openPlayer('<?= htmlspecialchars($src_url) ?>','<?= $ch ?> — Fuente')" title="Reproducir fuente">▶</button>
         </div>
         <?php endif ?>
-        <?php if($hls['segments'] > 0): ?>
+        <div id="hlsbtn-<?= $ch ?>"><?php if($hls['segments'] > 0): ?>
         <div class="url-row">
           <span class="url-lbl">HLS:</span>
           <button class="url-icon-btn" onclick="copyUrl('<?= $url ?>')" title="Copiar URL HLS">📋</button>
@@ -818,7 +818,7 @@ foreach($channels as $ch):
           <button class="url-icon-btn" onclick="copyUrl('<?= $url ?>')" title="Copiar URL HLS (sin stream activo)">📋</button>
           <button class="url-icon-btn" style="opacity:.3;cursor:not-allowed" title="Sin HLS activo — canal en Wowza o sin segmentos">▶</button>
         </div>
-        <?php endif ?>
+        <?php endif ?></div>
       </td>
       <td>
         <?php if($hwowza): ?>
@@ -1244,6 +1244,22 @@ function refreshStats() {
         const bwvEl = document.getElementById('bwv-' + ch);
         if (bwvEl) bwvEl.textContent = fmtBw(d.bw_total);
         // HLS column live update
+        // Actualizar botón de play HLS según segmentos activos
+        const hlsBtnEl = document.getElementById('hlsbtn-' + ch);
+        if (hlsBtnEl && d.hls_segs !== undefined) {
+          const hlsUrl = 'http://' + location.hostname + ':8090/hls/' + ch + '/index.m3u8';
+          if (d.hls_segs > 0) {
+            hlsBtnEl.innerHTML = '<div class="url-row"><span class="url-lbl">HLS:</span>'
+              + '<button class="url-icon-btn" onclick="copyUrl(\''+hlsUrl+'\')" title="Copiar URL HLS">📋</button>'
+              + '<button class="url-icon-btn play" onclick="openPlayer(\''+hlsUrl+'\',\''+ch+' — HLS Output\')" title="Reproducir HLS nginx">▶</button>'
+              + '</div>';
+          } else {
+            hlsBtnEl.innerHTML = '<div class="url-row"><span class="url-lbl" style="color:#334155">HLS:</span>'
+              + '<button class="url-icon-btn" onclick="copyUrl(\''+hlsUrl+'\')" title="Copiar URL HLS (sin stream activo)">📋</button>'
+              + '<button class="url-icon-btn" style="opacity:.3;cursor:not-allowed" title="Sin HLS activo — canal en Wowza o sin segmentos">▶</button>'
+              + '</div>';
+          }
+        }
         const hlsEl = document.getElementById('hls-' + ch);
         if (hlsEl && d.hls_segs !== undefined) {
           if (d.hls_segs > 0) {
