@@ -806,11 +806,19 @@ foreach($channels as $ch):
           <button class="url-icon-btn play-src" onclick="openPlayer('<?= htmlspecialchars($src_url) ?>','<?= $ch ?> — Fuente')" title="Reproducir fuente">▶</button>
         </div>
         <?php endif ?>
+        <?php if($hls['segments'] > 0): ?>
         <div class="url-row">
           <span class="url-lbl">HLS:</span>
           <button class="url-icon-btn" onclick="copyUrl('<?= $url ?>')" title="Copiar URL HLS">📋</button>
-          <button class="url-icon-btn play" onclick="openPlayer('<?= $url ?>','<?= $ch ?> — HLS Output')" title="Reproducir HLS">▶</button>
+          <button class="url-icon-btn play" onclick="openPlayer('<?= $url ?>','<?= $ch ?> — HLS Output')" title="Reproducir HLS nginx">▶</button>
         </div>
+        <?php else: ?>
+        <div class="url-row">
+          <span class="url-lbl" style="color:#334155">HLS:</span>
+          <button class="url-icon-btn" onclick="copyUrl('<?= $url ?>')" title="Copiar URL HLS (sin stream activo)">📋</button>
+          <button class="url-icon-btn" style="opacity:.3;cursor:not-allowed" title="Sin HLS activo — canal en Wowza o sin segmentos">▶</button>
+        </div>
+        <?php endif ?>
       </td>
       <td>
         <?php if($hwowza): ?>
