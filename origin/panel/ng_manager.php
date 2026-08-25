@@ -225,6 +225,16 @@ function is_push_channel($ch) {
     return $cache[$ch];
 }
 
+function get_push_stream_name($ch) {
+    // Detecta la stream key activa del streamer físico (cualquier nombre)
+    $dir = HLS_BASE . "/$ch";
+    if (!is_dir($dir)) return null;
+    $files = glob("$dir/*.m3u8");
+    if (!$files) return null;
+    usort($files, fn($a,$b) => filemtime($b) - filemtime($a));
+    return basename($files[0], '.m3u8');
+}
+
 function has_wowza_config($ch) {
     return file_exists(WOWZA_DIR . "/$ch.conf") || file_exists(LIB_WOWZA . "/$ch.conf");
 }
@@ -765,10 +775,13 @@ foreach($channels as $ch):
   $bw_pct   = bw_pct($bw_total);
   $bw_col   = bw_color($bw_total);
 
-  // Current active system
-  $active_sys = 'nginx'; // default in this panel
-  if ($hwowza && $wst === 'RUNNING' && $st !== 'RUNNING') $active_sys = 'wowza';
+  // Tipo y sistema activo del canal
   $is_push = is_push_channel($ch);
+  $active_sys = $is_push ? 'nginx' : get_channel_system($ch);
+  if ($is_push) {
+      $push_stream = get_push_stream_name($ch);
+      $url = $push_stream ? "$url_base/$ch/$push_stream.m3u8" : "$url_base/$ch/stream.m3u8";
+  }
 ?>
     <tr id="row-<?= $ch ?>" class="ch-main-row" data-ch="<?= $ch ?>" data-name="<?= strtolower(htmlspecialchars($name)) ?>">
       <td class="chk-col"><input type="checkbox" class="ch-chk" value="<?= $ch ?>"></td>
@@ -833,10 +846,17 @@ foreach($channels as $ch):
           <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:3px">
             <span style="color:#475569;font-size:.6rem;text-transform:uppercase;letter-spacing:.05em">Encoder / OBS</span>
             <button class="url-icon-btn" style="padding:1px 5px;font-size:.65rem"
-              onclick="copyUrl('rtmp://23.137.84.97:1936/live/<?= $ch ?>')" title="Copiar URL completa">📋</button>
+              onclick="copyUrl('rtmp://23.137.84.97:1936/<?= $ch ?>')" title="Copiar Server URL">📋</button>
           </div>
-          <div><span style="color:#475569;font-size:.6rem">Server:</span> <span>rtmp://23.137.84.97:1936/live</span></div>
-          <div><span style="color:#475569;font-size:.6rem">Key:</span> <span style="color:#f59e0b"><?= $ch ?></span></div>
+          <div><span style="color:#475569;font-size:.6rem">Server:</span>
+            <span style="color:#60a5fa">rtmp://23.137.84.97:1936/<?= $ch ?></span></div>
+          <div style="margin-top:2px"><span style="color:#475569;font-size:.6rem">Key:</span>
+            <span style="color:#f59e0b;font-size:.65rem" title="Usa la misma clave que en Wowza — solo cambia el puerto">
+              tu clave Wowza (igual)
+            </span></div>
+          <div style="color:#475569;font-size:.58rem;margin-top:3px;font-style:italic">
+            Solo cambia puerto: 1935 → 1936
+          </div>
         </div>
         <?php else: ?>
         <?php $src_url = get_source_url($ch); ?>
