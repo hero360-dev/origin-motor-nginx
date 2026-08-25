@@ -829,8 +829,14 @@ foreach($channels as $ch):
       </td>
       <td>
         <?php if($is_push): ?>
-        <div class="push-url-box" title="URL para configurar en el encoder/OBS">
-          rtmp://23.137.84.97:1936/live/<?= $ch ?>
+        <div class="push-url-box">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:3px">
+            <span style="color:#475569;font-size:.6rem;text-transform:uppercase;letter-spacing:.05em">Encoder / OBS</span>
+            <button class="url-icon-btn" style="padding:1px 5px;font-size:.65rem"
+              onclick="copyUrl('rtmp://23.137.84.97:1936/live/<?= $ch ?>')" title="Copiar URL completa">📋</button>
+          </div>
+          <div><span style="color:#475569;font-size:.6rem">Server:</span> <span>rtmp://23.137.84.97:1936/live</span></div>
+          <div><span style="color:#475569;font-size:.6rem">Key:</span> <span style="color:#f59e0b"><?= $ch ?></span></div>
         </div>
         <?php else: ?>
         <?php $src_url = get_source_url($ch); ?>
