@@ -282,6 +282,7 @@ if (!empty($_SESSION['ng_auth']) && isset($_GET['api'])) {
             $hls = get_hls_info($ch);
             $result[$ch] = [
                 'status'    => $st,
+                'is_push'   => is_push_channel($ch),
                 'bw_video'  => $ngs['bw_video'],
                 'bw_audio'  => $ngs['bw_audio'],
                 'bw_total'  => $ngs['bw_total'],
@@ -646,8 +647,13 @@ body { display: flex; }
 </div>
 
 <?php else:
-$running=0; $stopped=0; $total=count($channels);
-foreach($channels as $ch){ $s=get_supervisord_status($ch); if($s==='RUNNING') $running++; else $stopped++; }
+$running=0; $stopped=0; $total=0;
+foreach($channels as $ch){
+  if(is_push_channel($ch)) continue; // push channels no cuentan como detenidos
+  $s=get_supervisord_status($ch);
+  if($s==='RUNNING') $running++; else $stopped++;
+  $total++;
+}
 ?>
 <!-- DASHBOARD -->
 <div class="sidebar" id="sidebar">
@@ -1238,9 +1244,9 @@ function refreshStats() {
     .then(data => {
       running_count = 0; stopped_count = 0;
       for (const [ch, d] of Object.entries(data)) {
-        // Status badge
+        // Status badge (no sobreescribir push channels)
         const stEl = document.getElementById('st-' + ch);
-        if (stEl) {
+        if (stEl && !d.is_push) {
           if (d.system === 'wowza' && d.status === 'RUNNING') {
             stEl.style.background = '#7c3aed22';
             stEl.style.color = '#a78bfa';
@@ -1256,8 +1262,14 @@ function refreshStats() {
             stEl.textContent = icon + ' ' + d.status;
           }
         }
-        if (d.status === 'RUNNING') running_count++;
-        else stopped_count++;
+        // Push channels: no contar en stopped, no sobreescribir badge
+        if (d.is_push) {
+          // El badge de push se actualiza via hlsBtnEl (hls_segs)
+          // Solo necesitamos actualizar via la lógica de HLS segments
+        } else {
+          if (d.status === 'RUNNING') running_count++;
+          else stopped_count++;
+        }
 
         // Bandwidth bar
         const bar  = document.getElementById('bwbar-' + ch);
