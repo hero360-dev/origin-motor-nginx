@@ -214,39 +214,18 @@ function generate_wowza_conf(string $ch, string $active_content): string {
     return $conf;
 }
 
-function is_push_channel($ch) {
-    static $cache = [];
-    if (isset($cache[$ch])) return $cache[$ch];
-    $conf = ACTIVE_DIR . "/$ch.conf";
-    if (!file_exists($conf)) { $cache[$ch]=false; return false; }
-    $content = file_get_contents($conf);
-    $cache[$ch] = strpos($content, 'TYPE=push') !== false
-               || strpos($content, '/bin/false') !== false;
-    return $cache[$ch];
-}
-
-function get_push_stream_name($ch) {
-    // Detecta la stream key activa del streamer físico (cualquier nombre)
-    $dir = HLS_BASE . "/$ch";
-    if (!is_dir($dir)) return null;
-    $files = glob("$dir/*.m3u8");
-    if (!$files) return null;
-    usort($files, fn($a,$b) => filemtime($b) - filemtime($a));
-    return basename($files[0], '.m3u8');
-}
-
 function has_wowza_config($ch) {
     return file_exists(WOWZA_DIR . "/$ch.conf") || file_exists(LIB_WOWZA . "/$ch.conf");
 }
 
 function get_channel_system($ch) {
-    static $cache = [];
-    if (isset($cache[$ch])) return $cache[$ch];
+    // Read active conf to determine current system
     $active = ACTIVE_DIR . "/$ch.conf";
-    if (!file_exists($active)) { $cache[$ch]='nginx'; return 'nginx'; }
-    $c = file_get_contents($active);
-    $cache[$ch] = (strpos($c, ':1935') !== false) ? 'wowza' : 'nginx';
-    return $cache[$ch];
+    if (!file_exists($active)) return 'nginx'; // default
+    $content = file_get_contents($active);
+    if (strpos($content, ':1935') !== false) return 'wowza';
+    if (strpos($content, ':1936') !== false) return 'nginx';
+    return 'nginx';
 }
 
 function get_wowza_status($ch) {
@@ -292,7 +271,6 @@ if (!empty($_SESSION['ng_auth']) && isset($_GET['api'])) {
             $hls = get_hls_info($ch);
             $result[$ch] = [
                 'status'    => $st,
-                'is_push'   => is_push_channel($ch),
                 'bw_video'  => $ngs['bw_video'],
                 'bw_audio'  => $ngs['bw_audio'],
                 'bw_total'  => $ngs['bw_total'],
@@ -305,8 +283,7 @@ if (!empty($_SESSION['ng_auth']) && isset($_GET['api'])) {
                 'hls_segs'  => $hls['segments'],
                 'hls_age'   => $hls['age'],
                 'wowza_st'  => get_wowza_status($ch),
-                // Only check system for RUNNING channels (performance: avoids 700 file reads)
-                'system'    => ($st === 'RUNNING') ? get_channel_system($ch) : null,
+                'system'    => get_channel_system($ch),
             ];
         }
         echo json_encode($result);
@@ -476,10 +453,6 @@ tr:last-child td{border-bottom:none}
 tr:hover td{background:#1a2540}
 .chk-col{width:32px}
 /* Status badge */
-.sbadge-push-live{background:#dc262620;color:#f87171;padding:3px 10px;border-radius:6px;font-size:.8rem;font-weight:600;display:inline-flex;align-items:center;gap:5px}
-.sbadge-push-off{background:#33415520;color:#64748b;padding:3px 10px;border-radius:6px;font-size:.8rem}
-.dot-push{width:7px;height:7px;border-radius:50%;background:#ef4444;animation:pulse 1s infinite;flex-shrink:0}
-.push-url-box{background:#0f172a;border:1px solid #334155;border-radius:6px;padding:5px 8px;font-size:.68rem;color:#38bdf8;font-family:monospace;word-break:break-all;margin-top:4px}
 .sbadge{display:inline-flex;align-items:center;gap:5px;padding:3px 9px;border-radius:20px;font-size:.75rem;font-weight:600;white-space:nowrap}
 /* Bandwidth bar */
 .bw-wrap{min-width:160px}
@@ -658,13 +631,8 @@ body { display: flex; }
 </div>
 
 <?php else:
-$running=0; $stopped=0; $total=0;
-foreach($channels as $ch){
-  if(is_push_channel($ch)) continue; // push channels no cuentan como detenidos
-  $s=get_supervisord_status($ch);
-  if($s==='RUNNING') $running++; else $stopped++;
-  $total++;
-}
+$running=0; $stopped=0; $total=count($channels);
+foreach($channels as $ch){ $s=get_supervisord_status($ch); if($s==='RUNNING') $running++; else $stopped++; }
 ?>
 <!-- DASHBOARD -->
 <div class="sidebar" id="sidebar">
@@ -776,13 +744,9 @@ foreach($channels as $ch):
   $bw_pct   = bw_pct($bw_total);
   $bw_col   = bw_color($bw_total);
 
-  // Tipo y sistema activo del canal
-  $is_push = is_push_channel($ch);
-  $active_sys = $is_push ? 'nginx' : get_channel_system($ch);
-  if ($is_push) {
-      $push_stream = get_push_stream_name($ch);
-      $url = $push_stream ? "$url_base/$ch/$push_stream.m3u8" : "$url_base/$ch/stream.m3u8";
-  }
+  // Current active system
+  $active_sys = 'nginx'; // default in this panel
+  if ($hwowza && $wst === 'RUNNING' && $st !== 'RUNNING') $active_sys = 'wowza';
 ?>
     <tr id="row-<?= $ch ?>" class="ch-main-row" data-ch="<?= $ch ?>" data-name="<?= strtolower(htmlspecialchars($name)) ?>">
       <td class="chk-col"><input type="checkbox" class="ch-chk" value="<?= $ch ?>"></td>
@@ -793,15 +757,7 @@ foreach($channels as $ch):
         <div class="ch-name" title="<?= htmlspecialchars($name) ?>"><?= $name ? htmlspecialchars($name) : '<span style="color:#334155">—</span>' ?></div>
       </td>
       <td>
-        <?php if ($is_push): ?>
-          <?php if ($hls['segments'] > 0): ?>
-            <span class="sbadge-push-live" id="st-<?= $ch ?>">
-              <span class="dot-push"></span> EN VIVO
-            </span>
-          <?php else: ?>
-            <span class="sbadge-push-off" id="st-<?= $ch ?>">📡 SIN SEÑAL</span>
-          <?php endif ?>
-        <?php elseif ($st !== 'RUNNING' && $hwowza && $wst === 'RUNNING'): ?>
+        <?php if ($st !== 'RUNNING' && $hwowza && $wst === 'RUNNING'): ?>
           <span class="sbadge" id="st-<?= $ch ?>" style="background:#7c3aed22;color:#a78bfa">
             ☁ EN WOWZA
           </span>
@@ -842,24 +798,6 @@ foreach($channels as $ch):
         <?php endif ?>
       </td>
       <td>
-        <?php if($is_push): ?>
-        <div class="push-url-box">
-          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:3px">
-            <span style="color:#475569;font-size:.6rem;text-transform:uppercase;letter-spacing:.05em">Encoder / OBS</span>
-            <button class="url-icon-btn" style="padding:1px 5px;font-size:.65rem"
-              onclick="copyUrl('rtmp://23.137.84.97:1936/<?= $ch ?>')" title="Copiar Server URL">📋</button>
-          </div>
-          <div><span style="color:#475569;font-size:.6rem">Server:</span>
-            <span style="color:#60a5fa">rtmp://23.137.84.97:1936/<?= $ch ?></span></div>
-          <div style="margin-top:2px"><span style="color:#475569;font-size:.6rem">Key:</span>
-            <span style="color:#f59e0b;font-size:.65rem" title="Usa la misma clave que en Wowza — solo cambia el puerto">
-              tu clave Wowza (igual)
-            </span></div>
-          <div style="color:#475569;font-size:.58rem;margin-top:3px;font-style:italic">
-            Solo cambia puerto: 1935 → 1936
-          </div>
-        </div>
-        <?php else: ?>
         <?php $src_url = get_source_url($ch); ?>
         <?php if($src_url): ?>
         <div class="url-row">
@@ -867,7 +805,6 @@ foreach($channels as $ch):
           <button class="url-icon-btn" onclick="copyUrl('<?= htmlspecialchars($src_url) ?>')" title="Copiar URL fuente">📋</button>
           <button class="url-icon-btn play-src" onclick="openPlayer('<?= htmlspecialchars($src_url) ?>','<?= $ch ?> — Fuente')" title="Reproducir fuente">▶</button>
         </div>
-        <?php endif ?>
         <?php endif ?>
         <div id="hlsbtn-<?= $ch ?>"><?php if($hls['segments'] > 0): ?>
         <div class="url-row">
@@ -884,9 +821,7 @@ foreach($channels as $ch):
         <?php endif ?></div>
       </td>
       <td>
-        <?php if($is_push): ?>
-          <span style="color:#38bdf8;font-size:.72rem">📡 Push<br><span style="color:#334155;font-size:.65rem">nginx directo</span></span>
-        <?php elseif($hwowza): ?>
+        <?php if($hwowza): ?>
         <div class="switch-wrap">
           <div class="sw-toggle" id="sw-<?= $ch ?>">
             <button class="sw-btn <?= $active_sys==='wowza'?'active-wowza':'' ?>"
@@ -901,7 +836,6 @@ foreach($channels as $ch):
       </td>
       <td>
         <div class="act-btns">
-          <?php if(!$is_push): ?>
           <?php if($st==='RUNNING'): ?>
             <button class="abtn a-stop" onclick="chanAction('stop','<?= $ch ?>')">■ Stop</button>
             <button class="abtn a-restart" onclick="chanAction('restart','<?= $ch ?>')">↺</button>
@@ -909,7 +843,6 @@ foreach($channels as $ch):
             <button class="abtn a-start" onclick="chanAction('start','<?= $ch ?>')">▶ Start</button>
           <?php endif ?>
           <button class="abtn a-del" onclick="confirmDelete('<?= $ch ?>')" title="Eliminar canal">🗑</button>
-          <?php endif ?>
           <button class="abtn a-edges" id="ebtn-<?= $ch ?>" onclick="toggleEdges('<?= $ch ?>')" title="Ver distribución por edge">🌐</button>
         </div>
       </td>
@@ -1271,9 +1204,9 @@ function refreshStats() {
     .then(data => {
       running_count = 0; stopped_count = 0;
       for (const [ch, d] of Object.entries(data)) {
-        // Status badge (no sobreescribir push channels)
+        // Status badge
         const stEl = document.getElementById('st-' + ch);
-        if (stEl && !d.is_push) {
+        if (stEl) {
           if (d.system === 'wowza' && d.status === 'RUNNING') {
             stEl.style.background = '#7c3aed22';
             stEl.style.color = '#a78bfa';
@@ -1289,14 +1222,8 @@ function refreshStats() {
             stEl.textContent = icon + ' ' + d.status;
           }
         }
-        // Push channels: no contar en stopped, no sobreescribir badge
-        if (d.is_push) {
-          // El badge de push se actualiza via hlsBtnEl (hls_segs)
-          // Solo necesitamos actualizar via la lógica de HLS segments
-        } else {
-          if (d.status === 'RUNNING') running_count++;
-          else stopped_count++;
-        }
+        if (d.status === 'RUNNING') running_count++;
+        else stopped_count++;
 
         // Bandwidth bar
         const bar  = document.getElementById('bwbar-' + ch);
@@ -1317,17 +1244,6 @@ function refreshStats() {
         const bwvEl = document.getElementById('bwv-' + ch);
         if (bwvEl) bwvEl.textContent = fmtBw(d.bw_total);
         // HLS column live update
-        // Actualizar badge de estado para push channels
-        const stEl = document.getElementById('st-' + ch);
-        if (stEl && stEl.classList.contains('sbadge-push-live') || stEl && stEl.classList.contains('sbadge-push-off')) {
-          if (d.hls_segs > 0) {
-            stEl.className = 'sbadge-push-live';
-            stEl.innerHTML = '<span class="dot-push"></span> EN VIVO';
-          } else {
-            stEl.className = 'sbadge-push-off';
-            stEl.textContent = '📡 SIN SEÑAL';
-          }
-        }
         // Actualizar botón de play HLS según segmentos activos
         const hlsBtnEl = document.getElementById('hlsbtn-' + ch);
         if (hlsBtnEl && d.hls_segs !== undefined) {
@@ -1372,7 +1288,10 @@ function refreshStats() {
       if (sAvl) sAvl.textContent = (tot>0?Math.round(running_count/tot*100):0)+'%';
       if (bRun) bRun.textContent = running_count + ' RUNNING';
 
-      // Switch toggles are set on page load; updated via switchCh() response only
+      // Update switch toggles from stats
+      for (const [ch, d] of Object.entries(data)) {
+        if (d.system) updateSwitchFromData(ch, d.system);
+      }
       const ts = new Date().toLocaleTimeString('es',{hour:'2-digit',minute:'2-digit',second:'2-digit'});
       const ref = document.getElementById('last-refresh');
       if (ref) ref.textContent = 'Actualizado: ' + ts;
