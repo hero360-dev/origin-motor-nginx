@@ -1225,24 +1225,21 @@ function refreshStats() {
         if (d.status === 'RUNNING') running_count++;
         else stopped_count++;
 
-        // Bandwidth bar
+        // Bandwidth bar — uses HLS output BW (bw_out) as the visual bar
         const bar  = document.getElementById('bwbar-' + ch);
-        const bwv  = document.getElementById('bwv-' + ch);
-        const bwa  = document.getElementById('bwa-' + ch);
         const bwlbl= document.getElementById('bwlbl-' + ch);
+        const bwout = document.getElementById('bwout-' + ch);
+        const bwvEl = document.getElementById('bwv-' + ch);
+        // Convert bw_out from bytes/s to bps for stColor/stPct
+        const bwOutBps = (d.bw_out || 0) * 8;
         if (bar) {
-          const col = stColor(d.bw_total);
-          bar.style.width = stPct(d.bw_total) + '%';
+          const col = bwOutBps > 0 ? stColor(bwOutBps) : '#334155';
+          bar.style.width = bwOutBps > 0 ? stPct(bwOutBps) + '%' : '2px';
           bar.style.background = col;
         }
-        if (bwv) bwv.textContent = d.bw_v_fmt;
-        if (bwa) bwa.textContent = d.bw_a_fmt;
-        if (bwlbl) bwlbl.textContent = d.clients + ' usuarios en vivo';
-        const bwout = document.getElementById('bwout-' + ch);
+        if (bwvEl) bwvEl.textContent = fmtBw(d.bw_total);  // entrada RTMP
         if (bwout) bwout.textContent = d.bw_out > 0 ? fmtBw(d.bw_out) : '—';
-        // Update entrada label
-        const bwvEl = document.getElementById('bwv-' + ch);
-        if (bwvEl) bwvEl.textContent = fmtBw(d.bw_total);
+        if (bwlbl) bwlbl.textContent = d.clients + ' usuarios en vivo';
         // HLS column live update
         // Actualizar botón de play HLS según segmentos activos
         const hlsBtnEl = document.getElementById('hlsbtn-' + ch);
