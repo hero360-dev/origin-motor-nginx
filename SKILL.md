@@ -248,3 +248,95 @@ location ~ ^/01hbx([0-9]+)c6WI3k/myStream/playlist\.m3u8$ {
 ```
 
 **Nota:** `nginx-extras` (Ubuntu 18.04) o `nginx` oficial de nginx.org incluyen `secure_link`. El paquete `nginx-core` de Ubuntu NO lo incluye.
+
+## HLS Cache — Funcionamiento y Storage
+
+### Flujo del caché
+
+```
+FFmpeg → /var/lib/nginx-hls/fxNNNN/ (Origin, disco)
+              ↓  HTTP pull (nginx proxy)
+         /var/cache/nginx/hls/ (Edge, proxy_cache)
+              ↓
+         Viewer (browser / STB)
+```
+
+El **origin NO tiene proxy_cache** — genera los `.ts` en disco con FFmpeg y los sirve directamente.
+Los **edges SÍ tienen proxy_cache** — descargan del origin y los guardan localmente para servirlos rápido.
+
+### Origin: almacenamiento dinámico en /var/lib/nginx-hls/
+
+```nginx
+hls_fragment 3;          # cada segmento dura 3 segundos
+hls_playlist_length 12;  # playlist mantiene los últimos 12 segmentos = 36s de buffer
+hls_nested on;           # un subdirectorio por canal: /var/lib/nginx-hls/fxNNNN/
+add_header Cache-Control no-cache;
+```
+
+FFmpeg escribe los `.ts` y el `index.m3u8`. Cuando un segmento sale de la playlist, **FFmpeg lo elimina automáticamente**. El directorio de cada canal activo ocupa aprox. 15–30 MB (12 segs × ~2 MB/seg para 3Mbps). El total en origin es estable y pequeño independientemente de cuántos canales estén configurados — solo los que están en estado RUNNING ocupan espacio.
+
+**Canales RUNNING en nginx generan ~22 MB en total** (referencia actual con pocos canales activos).
+
+### Edges: proxy_cache con límite automático
+
+Config en cada edge (`/etc/nginx/nginx.conf`):
+
+```nginx
+proxy_cache_path /var/cache/nginx/hls
+    levels=1:2         # estructura árbol: ab/cdef/hashmd5 (evita miles de archivos en un dir)
+    keys_zone=hls:20m  # 20 MB de RAM para índice de claves
+    max_size=2g        # límite máximo en disco: 2 GB por edge
+    inactive=10m       # elimina automáticamente si nadie pide el archivo en 10 min
+    use_temp_path=off;
+
+# Tiempos de caché:
+proxy_cache_valid 200 206 3s;   # .m3u8 (playlist): refresca cada 3s
+proxy_cache_valid 200 206 1h;   # .ts (segmentos): guarda 1 hora
+```
+
+**Limpieza automática:** nginx elimina entradas cuando:
+1. El cache llega a `max_size=2g` → elimina entradas LRU (menos usadas)
+2. Un archivo no es pedido por más de `inactive=10m`
+
+**No hay riesgo de llenado descontrolado** — nginx lo gestiona automáticamente.
+
+### Estado de storage actual
+
+| Servidor | Directorio | Uso | Archivos | Límite |
+|---|---|---|---|---|
+| Origin | `/var/lib/nginx-hls/` | ~22 MB | ~50 .ts, 4 .m3u8 | Sin límite fijo (auto-limpieza FFmpeg) |
+| Edge 1 | `/var/cache/nginx/hls/` | ~16 MB | 10 | 2 GB |
+| Edge 2 | `/var/cache/nginx/hls/` | ~50 MB | 36 | 2 GB |
+| Edge 3 | `/var/cache/nginx/hls/` | ~276 KB | 0 | 2 GB |
+
+### Edge API (ng-edge-api.py) y el caché
+
+La mini API en puerto 8091 reporta el tamaño del caché del edge con `cache_info()`. Esta función usa `os.walk()` sobre `/var/cache/nginx/hls/` — si hay miles de archivos puede tardar y **bloquear el servidor HTTP** (es single-threaded).
+
+**Solución implementada:** timeout interno de 2 segundos. Si se excede, reporta `"??"` en lugar de congelar.
+
+**Síntoma de edge API congelada:** `curl http://EDGE_IP:8091/metrics` hace timeout desde origin.
+**Solución rápida:**
+```bash
+ssh edge1 "systemctl restart ng-edge-api"
+ssh edge2 "systemctl restart ng-edge-api"
+ssh edge3 "systemctl restart ng-edge-api"
+```
+
+**Diagnóstico de caché en edges:**
+```bash
+# Tamaño del caché
+ssh edge1 "du -sh /var/cache/nginx/hls"
+
+# Limpiar caché manualmente (sin detener nginx)
+ssh edge1 "find /var/cache/nginx/hls -type f -delete && echo OK"
+
+# Ver qué tiene la API ahora
+curl -s http://186.233.186.55:8091/metrics | python3 -m json.tool
+```
+
+### Consideraciones de storage a largo plazo
+
+- **Origin**: Estable. Si se tienen 200 canales RUNNING simultáneos en nginx → ~200 × 25 MB = ~5 GB máximo. Con la estrategia actual (mezcla Wowza + nginx) el riesgo es bajo.
+- **Edges**: Controlado por `max_size=2g`. Con 600+ canales y mucho tráfico, los 2 GB se llenarían, pero nginx purga los LRU automáticamente sin intervención manual.
+- **Monitorear**: `du -sh /var/lib/nginx-hls/` en origin y `du -sh /var/cache/nginx/hls/` en edges periódicamente.
