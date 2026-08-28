@@ -71,6 +71,37 @@ function get_mysql_names() {
     return $cache;
 }
 
+function get_mysql_pdo(): ?PDO {
+    $s = load_secrets();
+    if (empty($s['MYSQL_TUNNEL_HOST'])) return null;
+    try {
+        $dsn = "mysql:host={$s['MYSQL_TUNNEL_HOST']};port={$s['MYSQL_TUNNEL_PORT']};dbname={$s['MYSQL_TUNNEL_DB']};charset=utf8";
+        return new PDO($dsn, $s['MYSQL_TUNNEL_USER'], $s['MYSQL_TUNNEL_PASS'],
+            [PDO::ATTR_TIMEOUT => 2, PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]);
+    } catch (Exception $e) { return null; }
+}
+
+/**
+ * Actualiza iddealer en ambas tablas MySQL:
+ *   iddealer = 1 → canal en nginx (balancer nginx)
+ *   iddealer = 0 → canal en Wowza (balancer Wowza)
+ * Falla silenciosamente si el túnel no está disponible.
+ */
+function update_iddealer(string $ch, int $value): bool {
+    $pdo = get_mysql_pdo();
+    if (!$pdo) return false;
+    try {
+        $affected = 0;
+        // Actualizar en AMBAS tablas (lat y porn)
+        foreach (['stvchannels_lat', 'stvchannels_porn'] as $table) {
+            $stmt = $pdo->prepare("UPDATE `$table` SET iddealer = ? WHERE st_before = ? LIMIT 1");
+            $stmt->execute([$value, $ch]);
+            $affected += $stmt->rowCount();
+        }
+        return $affected > 0;
+    } catch (Exception $e) { return false; }
+}
+
 function get_channels() {
     // Leer TODOS los fx*.conf del directorio activo (conf.d)
     $files = glob(ACTIVE_DIR . '/fx*.conf') ?: [];
@@ -320,7 +351,8 @@ if (!empty($_SESSION['ng_auth']) && isset($_GET['api'])) {
                 shell_exec("sudo cp " . escapeshellarg($lib) . " " . escapeshellarg($active) . " 2>/dev/null");
                 shell_exec("(sudo supervisorctl reread && sudo supervisorctl update $ch && sudo supervisorctl start $ch) > /dev/null 2>&1 &");
             }
-            $result = ['ok'=>true,'msg'=>"$ch → Wowza"];
+            update_iddealer($ch, 0); // iddealer=0 → Wowza
+            $result = ['ok'=>true,'msg'=>"$ch → Wowza",'db'=>'iddealer=0'];
         } elseif ($target === 'nginx') {
             $lib        = LIB_NGINX . "/$ch.conf";
             $active     = ACTIVE_DIR . "/$ch.conf";
@@ -345,7 +377,8 @@ if (!empty($_SESSION['ng_auth']) && isset($_GET['api'])) {
                 shell_exec("sudo supervisorctl stop $ch > /dev/null 2>&1");
                 shell_exec("sudo cp " . escapeshellarg($lib) . " " . escapeshellarg($active) . " 2>/dev/null");
                 shell_exec("(sudo supervisorctl reread && sudo supervisorctl update $ch && sudo supervisorctl start $ch) > /dev/null 2>&1 &");
-                $result = ['ok'=>true,'msg'=>"$ch → nginx"];
+                update_iddealer($ch, 1); // iddealer=1 → nginx
+                $result = ['ok'=>true,'msg'=>"$ch → nginx",'db'=>'iddealer=1'];
             } else {
                 $result = ['ok'=>false,'msg'=>"$ch: no se pudo generar conf nginx"];
             }
@@ -364,10 +397,12 @@ if (!empty($_SESSION['ng_auth']) && isset($_GET['api'])) {
             if ($target === 'wowza' && has_wowza_config($ch)) {
                 shell_exec("sudo supervisorctl stop ng-$ch > /dev/null 2>&1 &");
                 shell_exec("sudo supervisorctl start $ch > /dev/null 2>&1 &");
+                update_iddealer($ch, 0); // iddealer=0 → Wowza
                 $done++;
             } elseif ($target === 'nginx') {
                 if (has_wowza_config($ch)) shell_exec("sudo supervisorctl stop $ch > /dev/null 2>&1 &");
                 shell_exec("sudo supervisorctl start ng-$ch > /dev/null 2>&1 &");
+                update_iddealer($ch, 1); // iddealer=1 → nginx
                 $done++;
             }
         }
