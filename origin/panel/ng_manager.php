@@ -64,7 +64,7 @@ function get_avatar_data(): array {
     static $cache_ts = 0;
     if ($cache !== null && (time() - $cache_ts) < 5) return $cache;
 
-    $cache = ['statuses' => [], 'source_urls' => [], 'channels' => []];
+    $cache = ['statuses' => [], 'source_urls' => [], 'channels' => [], 'systems' => []];
 
     // SSH batch: status | lista confs | URLs source (grep -i sin sed para evitar escaping)
     // Formato: STATUS_BLOCK ---AVST--- CONFS_LIST ---AVCH--- URLS_LIST
@@ -73,7 +73,10 @@ function get_avatar_data(): array {
                 . ' ; ls /etc/supervisor/conf.d/fx*.conf 2>/dev/null'
                 . ' ; echo ---AVCH---'
                 . ' ; grep -rh "\-i http" /etc/supervisor/conf.d/fx*.conf 2>/dev/null'
-                . '    | grep -oP "https?://\S+"';
+                . '    | grep -oP "https?://\S+" 2>/dev/null'
+                . ' ; echo ---AVRTMP---'
+                . ' ; grep -h "rtmp://" /etc/supervisor/conf.d/fx*.conf 2>/dev/null'
+                . '   | grep -oP "rtmp://\S+" 2>/dev/null || true';
 
     $cmd = 'ssh -i ' . AVATAR_SSH_KEY
          . ' -o StrictHostKeyChecking=no -o ConnectTimeout=5 -o BatchMode=yes '
@@ -105,15 +108,30 @@ function get_avatar_data(): array {
     }
     $cache['channels'] = $ch_list;
 
-    // Parsear URLs source: una URL por línea (grep -oP ya extrae solo la URL)
+    // Parsear URLs source y RTMP destinations
+    $p3 = explode('---AVRTMP---', $p2[1] ?? '', 2);
+    $urls_raw  = $p3[0] ?? '';
+    $rtmp_raw  = $p3[1] ?? '';
+
     $urls = array_values(array_filter(array_map('trim', explode("\n", trim($urls_raw)))));
+    $rtmps = array_values(array_filter(array_map('trim', explode("\n", trim($rtmp_raw)))));
     foreach ($ch_list as $i => $ch) {
         if (isset($urls[$i]) && filter_var($urls[$i], FILTER_VALIDATE_URL))
             $cache['source_urls'][$ch] = $urls[$i];
+        // Detectar sistema: abuelo.mine.nu:1935 = wowza, origin:1936 = nginx
+        $rtmp = $rtmps[$i] ?? '';
+        if (strpos($rtmp, ':1935') !== false)       $cache['systems'][$ch] = 'wowza';
+        elseif (strpos($rtmp, ':1936') !== false)   $cache['systems'][$ch] = 'nginx';
+        else                                         $cache['systems'][$ch] = 'wowza';
     }
 
     $cache_ts = time();
     return $cache;
+}
+
+function get_avatar_system(string $ch): string {
+    $data = get_avatar_data();
+    return $data['systems'][$ch] ?? 'wowza';
 }
 
 function get_avatar_status(string $ch): string {
@@ -427,6 +445,32 @@ if (!empty($_SESSION['ng_auth']) && isset($_GET['api'])) {
         $ch     = preg_replace('/[^a-zA-Z0-9_-]/', '', $_GET['ch']);
         $target = $_GET['target'] === 'wowza' ? 'wowza' : 'nginx';
         $result = ['ok'=>false,'msg'=>''];
+
+        // ── Canal PPV en Avatar: modificar conf remotamente via SSH ──────────
+        if (is_avatar_channel($ch)) {
+            $conf_path = '/etc/supervisor/conf.d/' . $ch . '.conf';
+            // Extraer número del canal (fx0900 → 0900)
+            $ch_num = preg_replace('/^fx/', '', $ch);
+            if ($target === 'nginx') {
+                // Wowza → nginx: cambiar RTMP destino a origin nginx
+                $sed_cmd = "sudo sed -i 's|rtmp://prov:prov001@abuelo.mine.nu:1935/{$ch}/myStream|rtmp://prov:prov001@23.137.84.97:1936/live/{$ch}|' {$conf_path}";
+            } else {
+                // nginx → Wowza: restaurar RTMP a abuelo
+                $sed_cmd = "sudo sed -i 's|rtmp://prov:prov001@23.137.84.97:1936/live/{$ch}|rtmp://prov:prov001@abuelo.mine.nu:1935/{$ch}/myStream|' {$conf_path}";
+            }
+            $restart_cmd = 'sudo supervisorctl reread > /dev/null 2>&1 && sudo supervisorctl update ' . $ch . ' > /dev/null 2>&1 && sudo supervisorctl restart ' . $ch . ' > /dev/null 2>&1';
+            $remote = $sed_cmd . ' && ' . $restart_cmd;
+            $ssh_cmd = 'ssh -i ' . AVATAR_SSH_KEY
+                     . ' -o StrictHostKeyChecking=no -o ConnectTimeout=5 -o BatchMode=yes '
+                     . AVATAR_USER . '@' . AVATAR_HOST
+                     . ' ' . escapeshellarg($remote);
+            @shell_exec($ssh_cmd);
+            update_iddealer($ch, $target === 'nginx' ? 1 : 0);
+            $result = ['ok'=>true,'msg'=>"$ch → $target (avatar)",'db'=>'iddealer='.($target==='nginx'?1:0)];
+            echo json_encode($result);
+            exit;
+        }
+
         if ($target === 'wowza') {
             $lib    = LIB_WOWZA . "/$ch.conf";
             $active = ACTIVE_DIR . "/$ch.conf";
@@ -881,7 +925,7 @@ foreach($channels as $ch):
 
   // Current active system
   $active_sys = 'nginx'; // default in this panel
-  if ($is_avatar) $active_sys = 'wowza'; // PPV siempre en Wowza
+  if ($is_avatar) $active_sys = get_avatar_system($ch); // PPV: leer del conf remoto
   elseif ($hwowza && $wst === 'RUNNING' && $st !== 'RUNNING') $active_sys = 'wowza';
 ?>
     <tr id="row-<?= $ch ?>" class="ch-main-row" data-ch="<?= $ch ?>" data-name="<?= strtolower(htmlspecialchars($name)) ?>">
@@ -957,12 +1001,11 @@ foreach($channels as $ch):
         <?php endif ?></div>
       </td>
       <td>
-        <?php if($is_avatar): ?>
-          <span style="color:#7c3aed;font-size:.72rem;font-weight:700;background:#4c1d95;padding:2px 7px;border-radius:10px">
-            🎬 PPV Avatar
-          </span>
-        <?php elseif($hwowza): ?>
+        <?php if($is_avatar || $hwowza): ?>
         <div class="switch-wrap">
+          <?php if($is_avatar): ?>
+          <div style="font-size:.6rem;color:#a78bfa;margin-bottom:3px">🎬 PPV</div>
+          <?php endif ?>
           <div class="sw-toggle" id="sw-<?= $ch ?>">
             <button class="sw-btn <?= $active_sys==='wowza'?'active-wowza':'' ?>"
               onclick="switchCh('<?= $ch ?>','wowza')">Wowza</button>
