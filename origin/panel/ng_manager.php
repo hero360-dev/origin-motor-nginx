@@ -14,7 +14,7 @@ define('SCRIPTS_DIR', '/usr/local/bin');
 define('HLS_BASE', '/var/lib/nginx-hls');
 define('SECRETS_FILE', '/etc/casino-secrets.env');
 // ── Servidor Avatar (PPV fx0900+) ───────────────────────────────────────────
-define('AVATAR_SSH_KEY', '/root/.ssh/id_avatar');
+define('AVATAR_SSH_KEY', '/var/www/.ssh/id_avatar');
 define('AVATAR_USER',    'milolumina');
 define('AVATAR_HOST',    '23.237.50.178');
 define('AVATAR_MIN_CH',  900);
@@ -69,10 +69,10 @@ function get_avatar_data(): array {
     // SSH batch: status | lista confs | URLs source (grep -i sin sed para evitar escaping)
     // Formato: STATUS_BLOCK ---AVST--- CONFS_LIST ---AVCH--- URLS_LIST
     $remote_cmd = 'sudo supervisorctl status 2>/dev/null'
-                . ' && echo ---AVST---'
-                . ' && ls /etc/supervisor/conf.d/fx*.conf 2>/dev/null'
-                . ' && echo ---AVCH---'
-                . ' && grep -rh "\-i http" /etc/supervisor/conf.d/fx*.conf 2>/dev/null'
+                . ' ; echo ---AVST---'
+                . ' ; ls /etc/supervisor/conf.d/fx*.conf 2>/dev/null'
+                . ' ; echo ---AVCH---'
+                . ' ; grep -rh "\-i http" /etc/supervisor/conf.d/fx*.conf 2>/dev/null'
                 . '    | grep -oP "https?://\S+"';
 
     $cmd = 'ssh -i ' . AVATAR_SSH_KEY
