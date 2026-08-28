@@ -423,7 +423,7 @@ if (!empty($_SESSION['ng_auth']) && isset($_GET['api'])) {
                 'hls_segs'  => $hls['segments'],
                 'hls_age'   => $hls['age'],
                 'wowza_st'  => get_wowza_status($ch),
-                'system'    => get_channel_system($ch),
+                'system'    => is_avatar_channel($ch) ? get_avatar_system($ch) : get_channel_system($ch),
             ];
         }
         echo json_encode($result);
