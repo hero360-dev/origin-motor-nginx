@@ -13,6 +13,11 @@ define('WOWZA_DIR', '/etc/supervisor/conf.d');
 define('SCRIPTS_DIR', '/usr/local/bin');
 define('HLS_BASE', '/var/lib/nginx-hls');
 define('SECRETS_FILE', '/etc/casino-secrets.env');
+// ── Servidor Avatar (PPV fx0900+) ───────────────────────────────────────────
+define('AVATAR_SSH_KEY', '/root/.ssh/id_avatar');
+define('AVATAR_USER',    'milolumina');
+define('AVATAR_HOST',    '23.237.50.178');
+define('AVATAR_MIN_CH',  900);
 
 // ─── SESSION TIMEOUT ──────────────────────────────────────────────────────
 if (!empty($_SESSION['ng_auth'])) {
@@ -48,6 +53,84 @@ function load_secrets() {
     return $s;
 }
 
+function is_avatar_channel(string $ch): bool {
+    // Canales fx0900+ viven en el servidor avatar (23.237.50.178)
+    if (!preg_match('/^fx(\d+)$/i', $ch, $m)) return false;
+    return (int)$m[1] >= AVATAR_MIN_CH;
+}
+
+function get_avatar_data(): array {
+    static $cache = null;
+    static $cache_ts = 0;
+    if ($cache !== null && (time() - $cache_ts) < 5) return $cache;
+
+    $cache = ['statuses' => [], 'source_urls' => [], 'channels' => []];
+
+    // SSH batch: status | lista confs | URLs source (grep -i sin sed para evitar escaping)
+    // Formato: STATUS_BLOCK ---AVST--- CONFS_LIST ---AVCH--- URLS_LIST
+    $remote_cmd = 'sudo supervisorctl status 2>/dev/null'
+                . ' && echo ---AVST---'
+                . ' && ls /etc/supervisor/conf.d/fx*.conf 2>/dev/null'
+                . ' && echo ---AVCH---'
+                . ' && grep -rh "\-i http" /etc/supervisor/conf.d/fx*.conf 2>/dev/null'
+                . '    | grep -oP "https?://\S+"';
+
+    $cmd = 'ssh -i ' . AVATAR_SSH_KEY
+         . ' -o StrictHostKeyChecking=no -o ConnectTimeout=5 -o BatchMode=yes '
+         . AVATAR_USER . '@' . AVATAR_HOST
+         . ' ' . escapeshellarg($remote_cmd);
+
+    $out = @shell_exec($cmd);
+    if (!$out) { $cache_ts = time(); return $cache; }
+
+    // Dividir bloques
+    $p1    = explode('---AVST---', $out, 2);
+    $status_raw = $p1[0] ?? '';
+    $p2    = explode('---AVCH---', $p1[1] ?? '', 2);
+    $confs_raw = $p2[0] ?? '';
+    $urls_raw  = $p2[1] ?? '';
+
+    // Parsear estados: "fx0900  RUNNING  pid ..."
+    foreach (explode("\n", trim($status_raw)) as $line) {
+        if (preg_match('/^(fx\w+)\s+(\w+)/', trim($line), $m))
+            $cache['statuses'][$m[1]] = strtoupper($m[2]);
+    }
+
+    // Parsear lista de canales desde paths de conf
+    $ch_list = [];
+    foreach (explode("\n", trim($confs_raw)) as $cf) {
+        $cf = trim($cf);
+        if (preg_match('/fx(\d+)\.conf$/', $cf, $m))
+            $ch_list[] = 'fx' . $m[1];
+    }
+    $cache['channels'] = $ch_list;
+
+    // Parsear URLs source: una URL por línea (grep -oP ya extrae solo la URL)
+    $urls = array_values(array_filter(array_map('trim', explode("\n", trim($urls_raw)))));
+    foreach ($ch_list as $i => $ch) {
+        if (isset($urls[$i]) && filter_var($urls[$i], FILTER_VALIDATE_URL))
+            $cache['source_urls'][$ch] = $urls[$i];
+    }
+
+    $cache_ts = time();
+    return $cache;
+}
+
+function get_avatar_status(string $ch): string {
+    $data = get_avatar_data();
+    return $data['statuses'][$ch] ?? 'UNKNOWN';
+}
+
+function get_avatar_source_url(string $ch): string {
+    $data = get_avatar_data();
+    return $data['source_urls'][$ch] ?? '';
+}
+
+function get_avatar_channels(): array {
+    $data = get_avatar_data();
+    return $data['channels'];
+}
+
 function get_mysql_names() {
     static $cache = null;
     if ($cache !== null) return $cache;
@@ -63,6 +146,8 @@ function get_mysql_names() {
             SELECT st_before, descripcion FROM stvchannels_lat  WHERE st_before IS NOT NULL
             UNION ALL
             SELECT st_before, descripcion FROM stvchannels_porn WHERE st_before IS NOT NULL
+            UNION ALL
+            SELECT st_before, descripcion FROM stvchannels_ppv  WHERE st_before IS NOT NULL
         ");
         foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
             $cache[$row['st_before']] = $row['descripcion'];
@@ -93,7 +178,7 @@ function update_iddealer(string $ch, int $value): bool {
     try {
         $affected = 0;
         // Actualizar en AMBAS tablas (lat y porn)
-        foreach (['stvchannels_lat', 'stvchannels_porn'] as $table) {
+        foreach (['stvchannels_lat', 'stvchannels_porn', 'stvchannels_ppv'] as $table) {
             $stmt = $pdo->prepare("UPDATE `$table` SET iddealer = ? WHERE st_before = ? LIMIT 1");
             $stmt->execute([$value, $ch]);
             $affected += $stmt->rowCount();
@@ -103,13 +188,17 @@ function update_iddealer(string $ch, int $value): bool {
 }
 
 function get_channels() {
-    // Leer TODOS los fx*.conf del directorio activo (conf.d)
+    // Leer TODOS los fx*.conf del directorio activo (conf.d) + avatar
     $files = glob(ACTIVE_DIR . '/fx*.conf') ?: [];
     $channels = [];
     foreach ($files as $f) {
         $name = preg_replace('/\.conf$/', '', basename($f));
         if (preg_match('/^fx\d+$/', $name) && !in_array($name, $channels))
             $channels[] = $name;
+    }
+    // Agregar canales del servidor avatar (PPV fx0900+)
+    foreach (get_avatar_channels() as $ach) {
+        if (!in_array($ach, $channels)) $channels[] = $ach;
     }
     sort($channels);
     return $channels;
@@ -131,6 +220,7 @@ function get_all_supervisord_statuses() {
 }
 
 function get_supervisord_status($ch) {
+    if (is_avatar_channel($ch)) return get_avatar_status($ch);
     $all = get_all_supervisord_statuses();
     // New single-file approach: program name = channel name
     if (isset($all[$ch])) return $all[$ch];
@@ -209,6 +299,7 @@ function get_hls_info($ch) {
 }
 
 function get_source_url($ch) {
+    if (is_avatar_channel($ch)) return get_avatar_source_url($ch);
     $conf = ACTIVE_DIR . "/$ch.conf";
     if (!file_exists($conf)) return '';
     $content = file_get_contents($conf);
@@ -420,7 +511,15 @@ if (!empty($_SESSION['ng_auth']) && isset($_POST['action'], $_POST['channel'])) 
     $ch = preg_replace('/[^a-zA-Z0-9_-]/', '', $_POST['channel']);
     $action = $_POST['action'];
     if (in_array($action, ['start','stop','restart']) && $ch) {
-        shell_exec("sudo supervisorctl $action ng-$ch > /dev/null 2>&1");
+        if (is_avatar_channel($ch)) {
+            // Canal PPV en servidor avatar → SSH
+            $remote_cmd = 'sudo supervisorctl ' . $action . ' ' . escapeshellarg($ch);
+            shell_exec('ssh -i ' . AVATAR_SSH_KEY . ' -o StrictHostKeyChecking=no -o BatchMode=yes '
+                . AVATAR_USER . '@' . AVATAR_HOST . ' ' . escapeshellarg($remote_cmd)
+                . ' > /dev/null 2>&1');
+        } else {
+            shell_exec("sudo supervisorctl $action ng-$ch > /dev/null 2>&1");
+        }
     }
     header('Location: ng_manager.php');
     exit;
@@ -764,8 +863,9 @@ foreach($channels as $ch):
   $hls   = get_hls_info($ch);
   $name  = $ng_names[$ch] ?? '';
   $url   = "$url_base/$ch/index.m3u8";
-  $wst   = get_wowza_status($ch);
-  $hwowza = has_wowza_config($ch);
+  $wst      = get_wowza_status($ch);
+  $hwowza   = has_wowza_config($ch);
+  $is_avatar = is_avatar_channel($ch); // Canal PPV en servidor avatar
 
   $st_color = match($st){
     'RUNNING'=>'#22c55e','STOPPED'=>'#ef4444','STARTING'=>'#f59e0b',
@@ -781,7 +881,8 @@ foreach($channels as $ch):
 
   // Current active system
   $active_sys = 'nginx'; // default in this panel
-  if ($hwowza && $wst === 'RUNNING' && $st !== 'RUNNING') $active_sys = 'wowza';
+  if ($is_avatar) $active_sys = 'wowza'; // PPV siempre en Wowza
+  elseif ($hwowza && $wst === 'RUNNING' && $st !== 'RUNNING') $active_sys = 'wowza';
 ?>
     <tr id="row-<?= $ch ?>" class="ch-main-row" data-ch="<?= $ch ?>" data-name="<?= strtolower(htmlspecialchars($name)) ?>">
       <td class="chk-col"><input type="checkbox" class="ch-chk" value="<?= $ch ?>"></td>
@@ -856,7 +957,11 @@ foreach($channels as $ch):
         <?php endif ?></div>
       </td>
       <td>
-        <?php if($hwowza): ?>
+        <?php if($is_avatar): ?>
+          <span style="color:#7c3aed;font-size:.72rem;font-weight:700;background:#4c1d95;padding:2px 7px;border-radius:10px">
+            🎬 PPV Avatar
+          </span>
+        <?php elseif($hwowza): ?>
         <div class="switch-wrap">
           <div class="sw-toggle" id="sw-<?= $ch ?>">
             <button class="sw-btn <?= $active_sys==='wowza'?'active-wowza':'' ?>"
