@@ -149,6 +149,79 @@ function get_avatar_channels(): array {
     return $data['channels'];
 }
 
+// ── Edge-VOD channels (streamvod en edge2) ─────────────────────────────────
+
+function is_edge_vod_channel(string $ch): bool {
+    static $cache = [];
+    if (isset($cache[$ch])) return $cache[$ch];
+    $conf = ACTIVE_DIR . "/$ch.conf";
+    if (!file_exists($conf)) { $cache[$ch] = false; return false; }
+    $cache[$ch] = strpos(file_get_contents($conf), 'TYPE=edge_vod') !== false;
+    return $cache[$ch];
+}
+
+function get_edge_vod_info(string $ch): array {
+    static $cache = [];
+    if (isset($cache[$ch])) return $cache[$ch];
+    $default = ['host'=>'', 'user'=>'root', 'ssh_key'=>'/root/.ssh/id_edges',
+                'script_wowza'=>'', 'script_nginx'=>'', 'system'=>'wowza'];
+    $conf = ACTIVE_DIR . "/$ch.conf";
+    if (!file_exists($conf)) { $cache[$ch] = $default; return $default; }
+    $info = $default;
+    foreach (file($conf, FILE_IGNORE_NEW_LINES) as $line) {
+        if (!str_starts_with($line, '# ')) continue;
+        $line = substr($line, 2);
+        if (preg_match('/^EDGE_HOST=(.+)$/',         $line, $m)) $info['host']         = trim($m[1]);
+        if (preg_match('/^EDGE_USER=(.+)$/',         $line, $m)) $info['user']         = trim($m[1]);
+        if (preg_match('/^EDGE_SSH_KEY=(.+)$/',      $line, $m)) $info['ssh_key']      = trim($m[1]);
+        if (preg_match('/^EDGE_SCRIPT_WOWZA=(.+)$/', $line, $m)) $info['script_wowza'] = trim($m[1]);
+        if (preg_match('/^EDGE_SCRIPT_NGINX=(.+)$/', $line, $m)) $info['script_nginx'] = trim($m[1]);
+        if (preg_match('/^SYSTEM=(.+)$/',            $line, $m)) $info['system']       = trim($m[1]);
+    }
+    $cache[$ch] = $info;
+    return $info;
+}
+
+function get_edge_vod_statuses_batch(): array {
+    // Batch SSH a edge2 para obtener todos los estados de canales edge_vod
+    static $cache = null;
+    static $cache_ts = 0;
+    if ($cache !== null && (time() - $cache_ts) < 5) return $cache;
+    $cache = [];
+    $cmd = 'ssh -i /root/.ssh/id_edges -o StrictHostKeyChecking=no -o ConnectTimeout=5'
+         . ' -o BatchMode=yes root@186.233.186.58'
+         . ' ' . escapeshellarg('sudo supervisorctl status 2>/dev/null');
+    $out = @shell_exec($cmd);
+    if ($out) {
+        foreach (explode("\n", trim($out)) as $line) {
+            if (preg_match('/^(fx\w+)\s+(\w+)/', trim($line), $m))
+                $cache[$m[1]] = strtoupper($m[2]);
+        }
+    }
+    $cache_ts = time();
+    return $cache;
+}
+
+function get_edge_vod_status(string $ch): string {
+    $statuses = get_edge_vod_statuses_batch();
+    return $statuses[$ch] ?? 'UNKNOWN';
+}
+
+function get_edge_vod_system(string $ch): string {
+    $info = get_edge_vod_info($ch);
+    return $info['system'] ?? 'wowza';
+}
+
+function update_edge_vod_system_in_conf(string $ch, string $system): void {
+    $conf = ACTIVE_DIR . "/$ch.conf";
+    if (!file_exists($conf)) return;
+    $content = file_get_contents($conf);
+    $content = preg_replace('/^# SYSTEM=.*/m', "# SYSTEM=$system", $content);
+    file_put_contents($conf, $content);
+    // Limpiar cache de get_edge_vod_info
+    // (static cache no se puede limpiar fácilmente, pero el próximo request lo verá)
+}
+
 function get_mysql_names() {
     static $cache = null;
     if ($cache !== null) return $cache;
@@ -238,7 +311,8 @@ function get_all_supervisord_statuses() {
 }
 
 function get_supervisord_status($ch) {
-    if (is_avatar_channel($ch)) return get_avatar_status($ch);
+    if (is_edge_vod_channel($ch))  return get_edge_vod_status($ch);
+    if (is_avatar_channel($ch))    return get_avatar_status($ch);
     $all = get_all_supervisord_statuses();
     // New single-file approach: program name = channel name
     if (isset($all[$ch])) return $all[$ch];
@@ -359,6 +433,7 @@ function has_wowza_config($ch) {
 }
 
 function get_channel_system($ch) {
+    if (is_edge_vod_channel($ch)) return get_edge_vod_system($ch);
     // Read active conf to determine current system
     $active = ACTIVE_DIR . "/$ch.conf";
     if (!file_exists($active)) return 'nginx'; // default
@@ -423,7 +498,7 @@ if (!empty($_SESSION['ng_auth']) && isset($_GET['api'])) {
                 'hls_segs'  => $hls['segments'],
                 'hls_age'   => $hls['age'],
                 'wowza_st'  => get_wowza_status($ch),
-                'system'    => is_avatar_channel($ch) ? get_avatar_system($ch) : get_channel_system($ch),
+                'system'    => is_edge_vod_channel($ch) ? get_edge_vod_system($ch) : (is_avatar_channel($ch) ? get_avatar_system($ch) : get_channel_system($ch)),
             ];
         }
         echo json_encode($result);
@@ -445,6 +520,38 @@ if (!empty($_SESSION['ng_auth']) && isset($_GET['api'])) {
         $ch     = preg_replace('/[^a-zA-Z0-9_-]/', '', $_GET['ch']);
         $target = $_GET['target'] === 'wowza' ? 'wowza' : 'nginx';
         $result = ['ok'=>false,'msg'=>''];
+
+        // ── Canal Edge-VOD (streamvod en edge2): SSH para cambiar script ─────
+        if (is_edge_vod_channel($ch)) {
+            $info = get_edge_vod_info($ch);
+            if (empty($info['host'])) {
+                echo json_encode(['ok'=>false,'msg'=>"$ch: sin EDGE_HOST en conf"]);
+                exit;
+            }
+            $new_script = ($target === 'nginx') ? $info['script_nginx'] : $info['script_wowza'];
+            $old_script = ($target === 'nginx') ? $info['script_wowza'] : $info['script_nginx'];
+            // Cambiar script en conf de supervisord en edge2
+            $sed_cmd  = "sudo sed -i 's|$old_script|$new_script|' /etc/supervisor/conf.d/$ch.conf";
+            $restart  = "sudo supervisorctl reread > /dev/null 2>&1"
+                      . " && sudo supervisorctl update $ch > /dev/null 2>&1"
+                      . " && sudo supervisorctl restart $ch > /dev/null 2>&1";
+            $remote   = $sed_cmd . ' && ' . $restart;
+            $ssh_cmd  = 'ssh -i ' . $info['ssh_key']
+                      . ' -o StrictHostKeyChecking=no -o ConnectTimeout=8 -o BatchMode=yes '
+                      . $info['user'] . '@' . $info['host']
+                      . ' ' . escapeshellarg($remote);
+            @shell_exec($ssh_cmd);
+            // Actualizar SYSTEM= en el conf marcador de origin
+            update_edge_vod_system_in_conf($ch, $target);
+            // Actualizar iddealer en MySQL
+            update_iddealer($ch, $target === 'nginx' ? 1 : 0);
+            // Limpiar HLS de origin si se vuelve a Wowza
+            if ($target === 'wowza') {
+                @shell_exec('rm -rf ' . HLS_BASE . "/$ch");
+            }
+            echo json_encode(['ok'=>true,'msg'=>"$ch → $target (edge-vod)",'db'=>'iddealer='.($target==='nginx'?1:0)]);
+            exit;
+        }
 
         // ── Canal PPV en Avatar: modificar conf remotamente via SSH ──────────
         if (is_avatar_channel($ch)) {
@@ -555,7 +662,14 @@ if (!empty($_SESSION['ng_auth']) && isset($_POST['action'], $_POST['channel'])) 
     $ch = preg_replace('/[^a-zA-Z0-9_-]/', '', $_POST['channel']);
     $action = $_POST['action'];
     if (in_array($action, ['start','stop','restart']) && $ch) {
-        if (is_avatar_channel($ch)) {
+        if (is_edge_vod_channel($ch)) {
+            // Canal Edge-VOD en edge2 → SSH
+            $evod = get_edge_vod_info($ch);
+            $remote_cmd = 'sudo supervisorctl ' . $action . ' ' . escapeshellarg($ch);
+            shell_exec('ssh -i ' . $evod['ssh_key'] . ' -o StrictHostKeyChecking=no -o BatchMode=yes '
+                . $evod['user'] . '@' . $evod['host'] . ' ' . escapeshellarg($remote_cmd)
+                . ' > /dev/null 2>&1');
+        } elseif (is_avatar_channel($ch)) {
             // Canal PPV en servidor avatar → SSH
             $remote_cmd = 'sudo supervisorctl ' . $action . ' ' . escapeshellarg($ch);
             shell_exec('ssh -i ' . AVATAR_SSH_KEY . ' -o StrictHostKeyChecking=no -o BatchMode=yes '
@@ -909,7 +1023,8 @@ foreach($channels as $ch):
   $url   = "$url_base/$ch/index.m3u8";
   $wst      = get_wowza_status($ch);
   $hwowza   = has_wowza_config($ch);
-  $is_avatar = is_avatar_channel($ch); // Canal PPV en servidor avatar
+  $is_avatar   = is_avatar_channel($ch);   // Canal PPV en servidor avatar
+  $is_edge_vod = is_edge_vod_channel($ch); // Canal VOD en edge2 (streamvod)
 
   $st_color = match($st){
     'RUNNING'=>'#22c55e','STOPPED'=>'#ef4444','STARTING'=>'#f59e0b',
@@ -925,7 +1040,8 @@ foreach($channels as $ch):
 
   // Current active system
   $active_sys = 'nginx'; // default in this panel
-  if ($is_avatar) $active_sys = get_avatar_system($ch); // PPV: leer del conf remoto
+  if ($is_edge_vod) $active_sys = get_edge_vod_system($ch); // Edge-VOD: leer SYSTEM= del conf
+  elseif ($is_avatar) $active_sys = get_avatar_system($ch);
   elseif ($hwowza && $wst === 'RUNNING' && $st !== 'RUNNING') $active_sys = 'wowza';
 ?>
     <tr id="row-<?= $ch ?>" class="ch-main-row" data-ch="<?= $ch ?>" data-name="<?= strtolower(htmlspecialchars($name)) ?>">
@@ -1001,9 +1117,11 @@ foreach($channels as $ch):
         <?php endif ?></div>
       </td>
       <td>
-        <?php if($is_avatar || $hwowza): ?>
+        <?php if($is_edge_vod || $is_avatar || $hwowza): ?>
         <div class="switch-wrap">
-          <?php if($is_avatar): ?>
+          <?php if($is_edge_vod): ?>
+          <div style="font-size:.6rem;color:#34d399;margin-bottom:3px">🎬 Edge-VOD</div>
+          <?php elseif($is_avatar): ?>
           <div style="font-size:.6rem;color:#a78bfa;margin-bottom:3px">🎬 PPV</div>
           <?php endif ?>
           <div class="sw-toggle" id="sw-<?= $ch ?>">
