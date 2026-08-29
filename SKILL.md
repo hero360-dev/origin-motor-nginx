@@ -340,3 +340,112 @@ curl -s http://186.233.186.55:8091/metrics | python3 -m json.tool
 - **Origin**: Estable. Si se tienen 200 canales RUNNING simultáneos en nginx → ~200 × 25 MB = ~5 GB máximo. Con la estrategia actual (mezcla Wowza + nginx) el riesgo es bajo.
 - **Edges**: Controlado por `max_size=2g`. Con 600+ canales y mucho tráfico, los 2 GB se llenarían, pero nginx purga los LRU automáticamente sin intervención manual.
 - **Monitorear**: `du -sh /var/lib/nginx-hls/` en origin y `du -sh /var/cache/nginx/hls/` en edges periódicamente.
+
+## Canales Edge-VOD (streamvod en edge2)
+
+### Descripción
+28 canales de películas/series VOD que corren en el servidor **edge2** (`186.233.186.58`) vía supervisord remoto. Cada canal reproduce un playlist rotativo de contenido desde la API de `vodsisweb.dalexx.com`.
+
+### Canales disponibles
+| Rango | Tipo | Ejemplos |
+|---|---|---|
+| fx0065–fx0082 | Inglés (18 canales) | movies65, terror71, disney68, scifi78... |
+| fx0690–fx0699 | Latino (10 canales) | latmovies65, latterror71, latcomedia73... |
+
+### Arquitectura
+```
+edge2 (186.233.186.58)
+  supervisord → accion69.sh         (modo Wowza)
+              → accion69_nginx.sh   (modo nginx)
+                    ↓ llama a
+              accion69.php / accion69_nginx.php
+                    ↓ consulta API
+              vodsisweb.dalexx.com → URL firmada película
+                    ↓
+              FFmpeg -re -i URL_PELICULA
+                    ↓
+              Wowza: rtmp://prov:prov001@abuelo.mine.nu:1935/fx0069/myStream
+              nginx: rtmp://prov:prov001@23.137.84.97:1936/live/fx0069
+```
+
+### Confs marcadores en origin
+Cada canal tiene un conf marcador en `/etc/supervisor/conf.d/fxNNNN.conf` con metadatos:
+```ini
+# TYPE=edge_vod
+# EDGE_HOST=186.233.186.58
+# EDGE_USER=root
+# EDGE_SSH_KEY=/var/www/.ssh/id_edges
+# EDGE_SCRIPT_WOWZA=/home/streamvod/accion69.sh
+# EDGE_SCRIPT_NGINX=/home/streamvod/accion69_nginx.sh
+# SYSTEM=wowza
+[program:fx0069]
+command=/bin/true
+autostart=false
+autorestart=false
+```
+`SYSTEM=` se actualiza al hacer switch desde el panel. La llave SSH debe estar en `/var/www/.ssh/id_edges` (accesible por www-data).
+
+### Scripts en edge2
+Cada canal tiene 4 archivos en `/home/streamvod/`:
+- `accion69.php` — versión Wowza (original)
+- `accion69.sh` — wrapper bash Wowza
+- `accion69_nginx.php` — versión nginx (generada)
+- `accion69_nginx.sh` — wrapper bash nginx
+
+Los scripts nginx están también en el repo bajo `edges/streamvod/`.
+
+### Switch Wowza⇔nginx desde el panel
+El toggle Wowza/nginx en el panel hace via SSH a edge2:
+1. `sudo sed -i 's|wowza.sh|nginx.sh|' /etc/supervisor/conf.d/fx0069.conf`
+2. `sudo supervisorctl restart fx0069`
+3. Actualiza `# SYSTEM=` en el conf marcador de origin
+4. Limpia HLS en origin si se vuelve a Wowza
+5. `update_iddealer($ch, 1/0)` en MySQL
+
+### SSH key setup
+La llave para edge2 debe estar en dos lugares:
+- `/root/.ssh/id_edges` — para comandos manuales desde root
+- `/var/www/.ssh/id_edges` — para que www-data (Apache/PHP) pueda conectar
+
+```bash
+# Si se resetea la llave (nueva):
+ssh-copy-id -i /root/.ssh/id_edges.pub root@186.233.186.58
+cp /root/.ssh/id_edges /var/www/.ssh/id_edges
+chown www-data:www-data /var/www/.ssh/id_edges
+chmod 600 /var/www/.ssh/id_edges
+# Cambiar owner de los confs marcadores para que www-data pueda escribir SYSTEM=
+chown www-data:www-data /etc/supervisor/conf.d/fx006[5-9].conf
+chown www-data:www-data /etc/supervisor/conf.d/fx07*.conf
+chown www-data:www-data /etc/supervisor/conf.d/fx008[0-2].conf
+chown www-data:www-data /etc/supervisor/conf.d/fx069*.conf
+```
+
+### Estado en supervisord (desde origin)
+```bash
+# Ver estado real de todos los edge-vod en edge2
+ssh -i /var/www/.ssh/id_edges root@186.233.186.58 \
+  "sudo supervisorctl status" | grep -E 'fx006[5-9]|fx07|fx008|fx069'
+
+# Ver script activo de un canal
+ssh -i /var/www/.ssh/id_edges root@186.233.186.58 \
+  "grep command /etc/supervisor/conf.d/fx0069.conf"
+```
+
+### Regenerar scripts nginx (si se corrompen)
+Los scripts en `/tmp/nginx_php_fixed/` (origin) y en `edges/streamvod/` (repo) son la versión correcta.
+Si se necesita regenerar:
+```bash
+# En origin — genera archivos correctos sin problemas de escaping
+python3 /root/generate_nginx_scripts.py  # ver edges/streamvod/
+
+# Copiar a edge2
+scp -i /var/www/.ssh/id_edges /tmp/nginx_php_fixed/*.php \
+  root@186.233.186.58:/home/streamvod/
+```
+
+**IMPORTANTE**: NO generar los _nginx.php desde dentro de SSH con bash heredocs de doble comilla — bash expande las variables `$idopt`, `$stream` a vacío. Siempre generar en origin con Python y copiar con SCP.
+
+### Bugs conocidos corregidos
+1. **Scripts con `$stream = ''`**: ocurre si se generan desde Python dentro de un SSH heredoc con dobles comillas (bash expande `$var`). Solución: generar en origin con Python puro y copiar con SCP.
+2. **SSH key inaccesible por www-data**: llave en `/root/.ssh/` no es leída por Apache. Copiar siempre a `/var/www/.ssh/`.
+3. **Confs marcadores owned por root**: www-data no puede actualizar `SYSTEM=`. Solución: `chown www-data`.
