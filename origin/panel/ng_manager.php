@@ -163,7 +163,7 @@ function is_edge_vod_channel(string $ch): bool {
 function get_edge_vod_info(string $ch): array {
     static $cache = [];
     if (isset($cache[$ch])) return $cache[$ch];
-    $default = ['host'=>'', 'user'=>'root', 'ssh_key'=>'/root/.ssh/id_edges',
+    $default = ['host'=>'', 'user'=>'root', 'ssh_key'=>'/var/www/.ssh/id_edges',
                 'script_wowza'=>'', 'script_nginx'=>'', 'system'=>'wowza'];
     $conf = ACTIVE_DIR . "/$ch.conf";
     if (!file_exists($conf)) { $cache[$ch] = $default; return $default; }
@@ -188,7 +188,7 @@ function get_edge_vod_statuses_batch(): array {
     static $cache_ts = 0;
     if ($cache !== null && (time() - $cache_ts) < 5) return $cache;
     $cache = [];
-    $cmd = 'ssh -i /root/.ssh/id_edges -o StrictHostKeyChecking=no -o ConnectTimeout=5'
+    $cmd = 'ssh -i /var/www/.ssh/id_edges -o StrictHostKeyChecking=no -o ConnectTimeout=5'
          . ' -o BatchMode=yes root@186.233.186.58'
          . ' ' . escapeshellarg('sudo supervisorctl status 2>/dev/null');
     $out = @shell_exec($cmd);
