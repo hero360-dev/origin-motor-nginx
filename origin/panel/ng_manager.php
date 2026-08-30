@@ -149,6 +149,50 @@ function get_avatar_channels(): array {
     return $data['channels'];
 }
 
+// ── Push channels (encoder físico → nginx directo) ───────────────────────────
+
+function is_push_channel(string $ch): bool {
+    static $cache = [];
+    if (isset($cache[$ch])) return $cache[$ch];
+    $conf = ACTIVE_DIR . "/$ch.conf";
+    if (!file_exists($conf)) { $cache[$ch] = false; return false; }
+    $c = file_get_contents($conf);
+    $cache[$ch] = strpos($c, 'TYPE=push') !== false;
+    return $cache[$ch];
+}
+
+function get_push_hls_url(string $ch): string {
+    // Leer HLS_URL del conf si está definida
+    $conf = ACTIVE_DIR . "/$ch.conf";
+    if (file_exists($conf)) {
+        foreach (file($conf, FILE_IGNORE_NEW_LINES) as $line) {
+            if (preg_match('/^# HLS_URL=(.+)$/', $line, $m)) return trim($m[1]);
+        }
+    }
+    // Fallback: buscar el primer .m3u8 en el directorio HLS
+    $dir = HLS_BASE . "/$ch";
+    if (is_dir($dir)) {
+        $files = glob("$dir/*.m3u8");
+        if ($files) {
+            $stream = basename($files[0], '.m3u8');
+            return "http://23.137.84.97:8090/hls/$ch/$stream.m3u8";
+        }
+    }
+    return "http://23.137.84.97:8090/hls/$ch/index.m3u8";
+}
+
+function get_push_encoder_info(string $ch): array {
+    // Lee metadatos del conf marcador
+    $conf = ACTIVE_DIR . "/$ch.conf";
+    $info = ['app'=>'live', 'stream'=>$ch, 'rtmp_server'=>'rtmp://23.137.84.97:1936'];
+    if (!file_exists($conf)) return $info;
+    foreach (file($conf, FILE_IGNORE_NEW_LINES) as $line) {
+        if (preg_match('/^# PUSH_APP=(.+)$/', $line, $m)) $info['app'] = trim($m[1]);
+        if (preg_match('/^# PUSH_STREAM=(.+)$/', $line, $m)) $info['stream'] = trim($m[1]);
+    }
+    return $info;
+}
+
 // ── Edge-VOD channels (streamvod en edge2) ─────────────────────────────────
 
 function is_edge_vod_channel(string $ch): bool {
@@ -486,6 +530,7 @@ if (!empty($_SESSION['ng_auth']) && isset($_GET['api'])) {
             $hls = get_hls_info($ch);
             $result[$ch] = [
                 'status'    => $st,
+                'is_push'   => is_push_channel($ch),
                 'bw_video'  => $ngs['bw_video'],
                 'bw_audio'  => $ngs['bw_audio'],
                 'bw_total'  => $ngs['bw_total'],
@@ -1023,14 +1068,23 @@ foreach($channels as $ch):
   $url   = "$url_base/$ch/index.m3u8";
   $wst      = get_wowza_status($ch);
   $hwowza   = has_wowza_config($ch);
+  $is_push     = is_push_channel($ch);     // Canal push (encoder físico)
   $is_avatar   = is_avatar_channel($ch);   // Canal PPV en servidor avatar
   $is_edge_vod = is_edge_vod_channel($ch); // Canal VOD en edge2 (streamvod)
+  // Para push channels: URL HLS dinámica (stream name puede ser myStream, etc.)
+  if ($is_push) $url = get_push_hls_url($ch);
 
   $st_color = match($st){
     'RUNNING'=>'#22c55e','STOPPED'=>'#ef4444','STARTING'=>'#f59e0b',
     'BACKOFF'=>'#f97316','EXITED'=>'#dc2626',default=>'#64748b'};
   $st_icon = match($st){
     'RUNNING'=>'▶','STOPPED'=>'■','STARTING'=>'◌','BACKOFF'=>'⚠','EXITED'=>'✕',default=>'?'};
+  // Push channels: estado basado en HLS (si tiene segmentos = EN VIVO)
+  if ($is_push) {
+      $push_hls_live = ($hls['segments'] > 0 && $hls['age'] < 10);
+      $st_color = $push_hls_live ? '#22c55e' : '#64748b';
+      $st_icon  = $push_hls_live ? '🔴' : '📡';
+  }
 
   $bw_v_fmt = format_bw($ngs['bw_video']);
   $bw_a_fmt = format_bw($ngs['bw_audio']);
@@ -1040,7 +1094,8 @@ foreach($channels as $ch):
 
   // Current active system
   $active_sys = 'nginx'; // default in this panel
-  if ($is_edge_vod) $active_sys = get_edge_vod_system($ch); // Edge-VOD: leer SYSTEM= del conf
+  if ($is_push)     $active_sys = 'nginx'; // push channels siempre en nginx
+  elseif ($is_edge_vod) $active_sys = get_edge_vod_system($ch); // Edge-VOD: leer SYSTEM= del conf
   elseif ($is_avatar) $active_sys = get_avatar_system($ch);
   elseif ($hwowza && $wst === 'RUNNING' && $st !== 'RUNNING') $active_sys = 'wowza';
 ?>
@@ -1117,7 +1172,11 @@ foreach($channels as $ch):
         <?php endif ?></div>
       </td>
       <td>
-        <?php if($is_edge_vod || $is_avatar || $hwowza): ?>
+        <?php if($is_push): ?>
+          <span style="color:#38bdf8;font-size:.72rem;font-weight:700;background:#0c2340;padding:2px 7px;border-radius:10px">
+            📡 Push nginx
+          </span>
+        <?php elseif($is_edge_vod || $is_avatar || $hwowza): ?>
         <div class="switch-wrap">
           <?php if($is_edge_vod): ?>
           <div style="font-size:.6rem;color:#34d399;margin-bottom:3px">🎬 Edge-VOD</div>
