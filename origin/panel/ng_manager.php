@@ -598,6 +598,24 @@ if (!empty($_SESSION['ng_auth']) && isset($_GET['api'])) {
             exit;
         }
 
+        // ── Canal Push (encoder físico): solo actualizar SYSTEM= e iddealer ───
+        // El operador debe cambiar el encoder manualmente (puerto 1935 Wowza ↔ 1936 nginx)
+        if (is_push_channel($ch)) {
+            // Actualizar SYSTEM= en conf marcador
+            $conf_path = ACTIVE_DIR . "/$ch.conf";
+            if (file_exists($conf_path)) {
+                $conf_c = file_get_contents($conf_path);
+                $conf_c = preg_replace('/^# SYSTEM=.*/m', "# SYSTEM=$target", $conf_c);
+                file_put_contents($conf_path, $conf_c);
+            }
+            update_iddealer($ch, $target === 'nginx' ? 1 : 0);
+            $note = $target === 'nginx'
+                ? 'Cambia el encoder a puerto 1936 y application fx0008'
+                : 'Cambia el encoder a puerto 1935 y application fx0008';
+            echo json_encode(['ok'=>true,'msg'=>"$ch → $target (push)",'note'=>$note,'db'=>'iddealer='.($target==='nginx'?1:0)]);
+            exit;
+        }
+
         // ── Canal PPV en Avatar: modificar conf remotamente via SSH ──────────
         if (is_avatar_channel($ch)) {
             $conf_path = '/etc/supervisor/conf.d/' . $ch . '.conf';
@@ -1079,11 +1097,13 @@ foreach($channels as $ch):
     'BACKOFF'=>'#f97316','EXITED'=>'#dc2626',default=>'#64748b'};
   $st_icon = match($st){
     'RUNNING'=>'▶','STOPPED'=>'■','STARTING'=>'◌','BACKOFF'=>'⚠','EXITED'=>'✕',default=>'?'};
-  // Push channels: estado basado en HLS (si tiene segmentos = EN VIVO)
+  // Push channels: estado basado en HLS (si tiene segmentos activos = EN VIVO)
+  $push_hls_live = false;
   if ($is_push) {
-      $push_hls_live = ($hls['segments'] > 0 && $hls['age'] < 10);
+      $push_hls_live = ($hls['segments'] > 0 && $hls['age'] < 15);
       $st_color = $push_hls_live ? '#22c55e' : '#64748b';
       $st_icon  = $push_hls_live ? '🔴' : '📡';
+      $st       = $push_hls_live ? 'EN VIVO' : 'SIN SEÑAL';
   }
 
   $bw_v_fmt = format_bw($ngs['bw_video']);
@@ -1173,9 +1193,15 @@ foreach($channels as $ch):
       </td>
       <td>
         <?php if($is_push): ?>
-          <span style="color:#38bdf8;font-size:.72rem;font-weight:700;background:#0c2340;padding:2px 7px;border-radius:10px">
-            📡 Push nginx
-          </span>
+        <div class="switch-wrap">
+          <div style="font-size:.6rem;color:#38bdf8;margin-bottom:3px">📡 Push</div>
+          <div class="sw-toggle" id="sw-<?= $ch ?>">
+            <button class="sw-btn <?= $active_sys==='wowza'?'active-wowza':'' ?>"
+              onclick="switchCh('<?= $ch ?>','wowza')">Wowza</button>
+            <button class="sw-btn <?= $active_sys==='nginx'?'active-nginx':'' ?>"
+              onclick="switchCh('<?= $ch ?>','nginx')">nginx</button>
+          </div>
+        </div>
         <?php elseif($is_edge_vod || $is_avatar || $hwowza): ?>
         <div class="switch-wrap">
           <?php if($is_edge_vod): ?>
